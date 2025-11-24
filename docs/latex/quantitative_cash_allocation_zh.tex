@@ -1,0 +1,213 @@
+\documentclass[12pt, a4paper]{ctexart}
+
+% --- 基础包配置 ---
+\usepackage{geometry}         % 页面边距
+\usepackage{amsmath, amssymb} % 数学公式
+\usepackage{graphicx}         % 图片插入
+\usepackage{xcolor}           % 颜色
+\usepackage{hyperref}         % 超链接
+\usepackage[skins]{tcolorbox} % 漂亮的文本框 (加载 skins 以支持 enhanced)
+\usepackage{parskip}          % 段落间距
+\usepackage{booktabs}         % 表格线
+
+% --- 页面设置 ---
+\geometry{left=2.5cm, right=2.5cm, top=2.5cm, bottom=2.5cm}
+\linespread{1.3} % 行间距
+
+% --- 颜色定义 ---
+\definecolor{myblue}{RGB}{0,102,204}
+\definecolor{mygreen}{RGB}{0,153,76}
+
+% --- tcolorbox 设置 ---
+\tcbset{enhanced, colback=myblue!5, colframe=myblue}
+
+\title{\textbf{从凯利公式到量化仓位管理：\\一个最大化收益率的资金管理系统}}
+\author{量化策略文档}
+
+\begin{document}
+
+\date{}
+\maketitle
+
+\section{引言：寻找资金管理的圣杯}
+
+在构建交易系统时，最难的问题往往不是“买什么”，而是\textbf{“买多少”}。
+如果买得太少，资金利用率低，浪费了机会；如果买得太多，一次剧烈波动就可能导致账户归零。
+
+本章节将详细阐述如何从最基础的数学原理出发，推导出一个量化仓位管理系统，旨在在高波动市场中最大化收益率，同时控制风险。
+LEAPS 是实现杠杆与风险控制的一种工具，但核心理念在于科学地分配资金。
+
+\section{第一阶段：起源 —— 离散凯利公式}
+\textit{(The Origin: Discrete Kelly Criterion)}
+
+一切的起点，是赌场里的抛硬币游戏。
+假设你有一个胜率 $p$ 的游戏，赢了赚 $b$ 倍，输了亏光。为了让长期财富增长速度最大化（而不是单次赢最多），数学家 J.L. Kelly 推导出了著名的公式：
+
+\[
+f^* = \frac{bp - q}{b}
+\]
+
+其中：
+\begin{itemize}
+    \item $p$: 赢的概率
+    \item $q$: 输的概率 ($1-p$)
+    \item $b$: 赔率
+\end{itemize}
+
+\textbf{局限性：} 这个公式假设游戏是“离散”的（玩一把就结束，要么赢要么输）。
+但股票市场是“连续”的，股价每一秒都在波动，不存在“输光”或“翻倍”的绝对界限。
+
+\section{第二阶段：进化 —— 连续时间莫顿比例}
+\textit{(Evolution: Merton's Fraction)}
+
+为了适应股市的连续波动，诺贝尔奖得主 Robert Merton 将凯利公式引入随机微积分领域。
+对于一个遵循几何布朗运动的资产，最佳仓位取决于\textbf{收益率}和\textbf{波动率}的对抗。
+
+核心公式（莫顿比例）：
+\[
+f^* = \frac{\mu - r}{\sigma^2}
+\]
+
+这个公式揭示了两个深刻的真理：
+\begin{enumerate}
+    \item \textbf{分子（动力）：} $\mu - r$ 是超额收益（预期收益减去无风险利率）。收益越高，仓位越大。
+    \item \textbf{分母（刹车）：} $\sigma^2$ 是方差。注意，这里是平方！
+          这意味着波动率对仓位的惩罚是指数级的。如果波动率翻倍，为了活命，你的仓位必须砍掉 75\%。
+\end{enumerate}
+
+\section{第三阶段：策略适配与杠杆实现}
+\textit{(Adaptation: Strategy Adjustment and Leverage Implementation)}
+
+在实际股市中，单纯的莫顿比例无法直接应用，因为不同标的存在估值偏离和波动率变化。
+我们需要对公式进行策略性适配，将 LEAPS 视为独立资产类别，精确计算其净优势（Net Edge）。
+
+\subsection{单标的动力与回报修正}
+
+\textbf{1. 正股回归动力 ($\mu_{\text{stock}}$)} \\
+利用均值回归原理计算正股的预期年化收益：
+\[
+\mu_{\text{stock}, i} = \lambda_i \cdot \ln\left(\frac{V_i}{P_i}\right)
+\]
+其中 $\lambda_i$ 为回归速度（弹性系数），$V_i$ 为合理估值，$P_i$ 为当前价格。偏离度越大，潜在反弹动力越强。
+
+\textbf{2. LEAPS 净优势 ($\text{ERP}$)} \\
+考虑 LEAPS 的杠杆放大效应，并严格扣除资金占用成本 ($r_f$) 与期权时间损耗 ($\theta$)，得到真实的净优势：
+\[
+\text{ERP}_i = (\mu_{\text{stock}, i} \cdot L_i) - r_f - \theta_{\text{annual}, i}
+\]
+\textit{注：此处 $\theta_{\text{annual}}$ 为年化时间损耗率（正值），体现维持杠杆头寸的“租金”成本。}
+
+\textbf{3. 估值折扣系数 ($\alpha$)} \\
+引入“风险水位”概念，确保在价格接近硬底时资金利用率最高，而在接近目标价时自动收缩敞口：
+\[
+\alpha_i = 1 - \beta \cdot \left( \frac{P_i - P_{\text{floor}, i}}{V_i - P_{\text{floor}, i}} \right)
+\]
+其中 $P_{\text{floor}, i}$ 为历史极值硬底。当 $P_i \to P_{\text{floor}}$ 时，$\alpha \to 1.0$（满仓信心）；当 $P_i \to V_i$ 时，$\alpha \to 1-\beta$（折扣保护）。
+
+\subsection{LEAPS 杠杆工具说明}
+
+为了实现非对称收益与尾部风险控制，我们使用深度实值远期期权（LEAPS）：
+
+\begin{itemize}
+    \item \textbf{行权价（Strike Price）}：设置在硬底 ($P_{\text{floor}}$) 附近，物理上截断下行尾部风险。即便正股腰斩，LEAPS 的最大亏损也被锁定。
+    \item \textbf{Delta 控制}：选择 $\delta > 0.8$ 的合约，获得接近正股的线性收益，提供约 2.0x - 3.0x 的有效杠杆 ($L$)。
+    \item \textbf{Theta 优化}：虽然引入了时间损耗，但由于策略专门捕捉被低估标的的高 $\mu$ 值，且深度实值期权的损耗率较低，策略的高 ERP 足以覆盖 Theta 成本。
+\end{itemize}
+
+\section{第四阶段：终极形态 —— 单标的现金公式}
+\textit{(The Final Form: Single Asset Cash Allocation)}
+
+整合上述所有参数，我们将 LEAPS 视为一个“高波动、高收益、带成本”的合成资产，代入凯利公式得到现金投入比例：
+
+\begin{tcolorbox}[title={单标的现金投入公式 (修正版)}]
+\[
+\text{cash}_i = \text{Capital} \cdot \frac{k \cdot \max(0, \alpha_i \cdot \text{ERP}_i)}{\sigma_{\text{stock}, i}^2 \cdot L_i^2}
+\]
+\end{tcolorbox}
+
+\textbf{公式核心逻辑解读：}
+\begin{itemize}
+    \item \textbf{分子（进攻）：} $\alpha_i \cdot \text{ERP}_i$
+    \begin{itemize}
+        \item 代表经估值信心调整后的净优势。只有当扣除利息和时间损耗后 ERP 仍为正，才允许开仓。
+    \end{itemize}
+    \item \textbf{分母（防守）：} $\sigma_{\text{stock}, i}^2 \cdot L_i^2$
+    \begin{itemize}
+        \item 这是 LEAPS 的方差 ($\text{Variance}_{\text{leaps}}$)。
+        \item \textbf{关键修正}：风险是随着杠杆 ($L_i$) 的\textbf{平方级}放大的。必须除以 $L^2$ 才能防止在高杠杆下爆仓，这是凯利公式应用于衍生品的数学铁律。
+    \end{itemize}
+    \item \textbf{调节器：} $k$ 为凯利部分因子（如 0.5 或 1.0），用于控制整体激进程度。
+\end{itemize}
+
+\section{第六阶段：多标的仓位处理 —— 归一化 vs 矩阵凯利}
+
+在实际投资中，我们可能同时持有很多标的。针对如何分配资金，我们提供两种由浅入深的思路。
+
+\subsection{方法一：简单归一化 (Simple Normalization)}
+\textit{适用于：小组合、标的间相关性低、或追求计算简便的场景。}
+
+假设有 $N$ 个标的，根据单标的公式计算出名义现金投入 $\text{cash}_i$。
+
+\textbf{1. 计算原始总仓位占用：}
+\[
+C_{\text{raw}} = \sum_{i=1}^{N} \text{cash}_i
+\]
+
+\textbf{2. 设定最大杠杆上限 ($C_{\max}$)：}
+例如，设定账户总资金占用不超过 100\% 或 120\%。
+
+\textbf{3. 线性缩放：}
+若 $C_{\text{raw}} > C_{\max}$，则对所有标的进行等比例压缩：
+\[
+\text{cash}_i^{\text{final}} = \text{cash}_i \cdot \frac{C_{\max}}{C_{\text{raw}}}
+\]
+若 $C_{\text{raw}} \le C_{\max}$，则保持原仓位不变。
+
+\textbf{评价：}
+\begin{itemize}
+    \item \textbf{优点}：直观，永远不会爆仓，保留了各标的之间 ERP 的相对强弱关系。
+    \item \textbf{缺点}：忽略了相关性。如果持仓全是高度相关的半导体股（如 NVDA, AMD, TSM），即使归一化后，组合的实际波动风险依然可能过大。
+\end{itemize}
+
+\subsection{方法二：多维矩阵凯利 (Multivariate Matrix Kelly)}
+\textit{适用于：大资金、标的关联度高、追求数学上最优解的场景。}
+
+当标的之间存在相关性时，单标的公式 ($\mu/\sigma^2$) 不再适用，必须引入\textbf{协方差矩阵}。
+
+\textbf{1. 定义参数：}
+\begin{itemize}
+    \item $\mathbf{E}$: 超额收益向量 ($N \times 1$)，其中第 $i$ 个元素为 $\alpha_i \cdot \text{ERP}_i$。
+    \item $\mathbf{\Sigma}$: LEAPS 收益率的协方差矩阵 ($N \times N$)。注意，这里的元素应为 $\text{Cov}(r_i \cdot L_i, r_j \cdot L_j)$。
+\end{itemize}
+
+\textbf{2. 矩阵凯利公式：}
+最优仓位向量 $\mathbf{F}^*$（每个元素代表该标的占总资金的比例）由下式给出：
+
+\begin{tcolorbox}[colback=white, colframe=myblue]
+\[
+\mathbf{F}^* = k \cdot \mathbf{\Sigma}^{-1} \cdot \mathbf{E}
+\]
+\end{tcolorbox}
+
+其中 $\mathbf{\Sigma}^{-1}$ 是协方差矩阵的逆矩阵。
+
+\textbf{3. 数学含义：}
+\begin{itemize}
+    \item 如果两个标的 $i, j$ 高度正相关（同涨同跌），$\mathbf{\Sigma}^{-1}$ 会自动降低两者的仓位权重，起到“惩罚拥挤交易”的作用。
+    \item 如果两个标的负相关（对冲），公式会自动放大仓位，因为组合风险被对冲降低了。
+\end{itemize}
+
+\textbf{评价：}
+\begin{itemize}
+    \item \textbf{优点}：这是理论上的“圣杯”，能精准处理相关性风险，实现风险调整后收益最大化。
+    \item \textbf{缺点}：计算复杂，且对协方差矩阵的估计误差非常敏感（垃圾进，垃圾出）。通常需要对结果施加非负约束（$\text{cash}_i \ge 0$）和总杠杆约束。
+\end{itemize}
+
+\subsection{实战建议}
+
+\begin{enumerate}
+    \item \textbf{默认推荐：} 使用 \textbf{方法一（归一化）}。虽然粗糙，但配合我们保守的 $L^2$ 分母设置，通常已经足够安全。
+    \item \textbf{进阶风控：} 如果持仓标的超过 5 只且处于同一板块，建议人为降低全组合的 $k$ 值（例如从 1.0 降至 0.7），以模拟相关性带来的风险。
+\end{enumerate}
+
+\end{document}

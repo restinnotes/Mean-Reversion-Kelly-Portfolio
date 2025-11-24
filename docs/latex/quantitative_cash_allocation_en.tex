@@ -1,0 +1,209 @@
+\documentclass[12pt, a4paper]{article}
+
+% --- Basic Packages ---
+\usepackage{geometry}         % Page margins
+\usepackage{amsmath, amssymb} % Math formulas
+\usepackage{graphicx}         % Images
+\usepackage{xcolor}           % Colors
+\usepackage{hyperref}         % Hyperlinks
+\usepackage[skins]{tcolorbox} % Text boxes (skins loaded for 'enhanced')
+\usepackage{parskip}          % Paragraph spacing
+\usepackage{booktabs}         % Table lines
+
+% --- Page Settings ---
+\geometry{left=2.5cm, right=2.5cm, top=2.5cm, bottom=2.5cm}
+\linespread{1.3} % Line spacing
+
+% --- Color Definitions ---
+\definecolor{myblue}{RGB}{0,102,204}
+\definecolor{mygreen}{RGB}{0,153,76}
+
+% --- tcolorbox Settings ---
+\tcbset{enhanced, colback=myblue!5, colframe=myblue}
+
+\title{\textbf{From Kelly Criterion to Quantitative Position Management: \\ A Capital Management System for Maximizing Returns}}
+\author{Quantitative Strategy Documentation}
+
+\begin{document}
+
+\date{}
+\maketitle
+
+\section{Introduction: The Holy Grail of Capital Management}
+
+In building a trading system, the hardest question is often not ``what to buy,'' but \textbf{``how much to buy.''}
+If you buy too little, capital utilization is low, and opportunities are wasted. If you buy too much, a single violent fluctuation can wipe out the account.
+
+This document details the derivation of a quantitative position management system starting from fundamental mathematical principles. It aims to maximize returns in high-volatility markets while strictly controlling risk.
+While LEAPS are the tool used for leverage and risk control, the core philosophy lies in the scientific allocation of capital.
+
+\section{Phase 1: The Origin — Discrete Kelly Criterion}
+
+Everything starts with a coin-tossing game in a casino.
+Suppose you have a game with a winning probability $p$. If you win, you gain $b$ times your bet; if you lose, you lose the bet. To maximize the long-term growth rate of wealth (rather than maximizing the win of a single round), mathematician J.L. Kelly derived the famous formula:
+
+\[
+f^* = \frac{bp - q}{b}
+\]
+
+Where:
+\begin{itemize}
+    \item $p$: Probability of winning
+    \item $q$: Probability of losing ($1-p$)
+    \item $b$: Odds (Payout ratio)
+\end{itemize}
+
+\textbf{Limitation:} This formula assumes the game is ``discrete'' (one round ends with a binary outcome).
+However, the stock market is ``continuous.'' Prices fluctuate every second, and there is no absolute boundary of ``losing everything'' or ``doubling'' in a single instance.
+
+\section{Phase 2: Evolution — Continuous Time Merton Fraction}
+
+To adapt to the continuous fluctuations of the stock market, Nobel Laureate Robert Merton introduced the Kelly Criterion into the field of stochastic calculus.
+For an asset following Geometric Brownian Motion, the optimal position depends on the battle between \textbf{Return} and \textbf{Volatility}.
+
+Core Formula (Merton's Fraction):
+\[
+f^* = \frac{\mu - r}{\sigma^2}
+\]
+
+This formula reveals two profound truths:
+\begin{enumerate}
+    \item \textbf{Numerator (Engine):} $\mu - r$ is the Excess Return (Expected Return minus Risk-Free Rate). The higher the return, the larger the position.
+    \item \textbf{Denominator (Brake):} $\sigma^2$ is the Variance. Note that this is squared!
+          This means the penalty for volatility on position size is exponential. If volatility doubles, to survive, your position size must be cut by 75\%.
+\end{enumerate}
+
+\section{Phase 3: Strategy Adaptation \& Leverage Implementation}
+
+In the actual stock market, the pure Merton Fraction cannot be applied directly because different assets have varying valuation deviations and volatility changes.
+We need to adapt the formula strategically, treating LEAPS as an independent asset class and calculating its Net Edge precisely.
+
+\subsection{Single Asset Momentum \& Return Correction}
+
+\textbf{1. Stock Mean Reversion Force ($\mu_{\text{stock}}$)} \\
+Using the principle of mean reversion, we calculate the expected annualized return of the underlying stock:
+\[
+\mu_{\text{stock}, i} = \lambda_i \cdot \ln\left(\frac{V_i}{P_i}\right)
+\]
+Where $\lambda_i$ is the reversion speed (elasticity coefficient), $V_i$ is the fair value, and $P_i$ is the current price. The greater the deviation, the stronger the potential rebound momentum.
+
+\textbf{2. LEAPS Net Edge ($\text{ERP}$)} \\
+Considering the leverage amplification effect of LEAPS, and strictly deducting the cost of capital ($r_f$) and option time decay ($\theta$), we get the true Net Edge:
+\[
+\text{ERP}_i = (\mu_{\text{stock}, i} \cdot L_i) - r_f - \theta_{\text{annual}, i}
+\]
+\textit{Note: Here, $\theta_{\text{annual}}$ is the annualized time decay rate (positive value), representing the ``rent'' cost of maintaining the leveraged position.}
+
+\textbf{3. Valuation Discount Coefficient ($\alpha$)} \\
+Introducing the concept of ``Risk Water Level'' ensures maximum capital utilization when prices are near the ``Hard Floor,'' and automatically contracts exposure when approaching the Target Price:
+\[
+\alpha_i = 1 - \beta \cdot \left( \frac{P_i - P_{\text{floor}, i}}{V_i - P_{\text{floor}, i}} \right)
+\]
+Where $P_{\text{floor}, i}$ is the historical valuation floor. When $P_i \to P_{\text{floor}}$, $\alpha \to 1.0$ (Full Confidence); when $P_i \to V_i$, $\alpha \to 1-\beta$ (Discount Protection).
+
+\subsection{LEAPS Leverage Tool Specification}
+
+To achieve asymmetric returns and tail risk control, we use Deep In-The-Money (ITM) LEAPS:
+
+\begin{itemize}
+    \item \textbf{Strike Price:} Set near the Hard Floor ($P_{\text{floor}}$) to physically truncate downside tail risk. Even if the stock halves, the maximum loss of the LEAPS is capped.
+    \item \textbf{Delta Control:} Select contracts with $\delta > 0.8$ to obtain linear returns close to the underlying stock, providing an effective leverage ($L$) of approximately 2.0x - 3.0x.
+    \item \textbf{Theta Optimization:} Although time decay is introduced, since the strategy targets undervalued assets with high $\mu$ values, and Deep ITM options have lower decay rates, the strategy's high ERP is sufficient to cover Theta costs.
+\end{itemize}
+
+\section{Phase 4: The Final Form — Single Asset Cash Formula}
+
+Integrating all the parameters above, we treat LEAPS as a ``high volatility, high return, cost-bearing'' synthetic asset. Substituting into the Kelly formula yields the cash allocation ratio:
+
+\begin{tcolorbox}[title={V23.1 Single Asset Cash Allocation Formula (Revised)}]
+\[
+\text{cash}_i = \text{Capital} \cdot \frac{k \cdot \max(0, \alpha_i \cdot \text{ERP}_i)}{\sigma_{\text{stock}, i}^2 \cdot L_i^2}
+\]
+\end{tcolorbox}
+
+\textbf{Core Logic Interpretation:}
+\begin{itemize}
+    \item \textbf{Numerator (Offense):} $\alpha_i \cdot \text{ERP}_i$
+    \begin{itemize}
+        \item Represents the Net Edge adjusted for valuation confidence. A position is opened only if the ERP remains positive after deducting interest and time decay.
+    \end{itemize}
+    \item \textbf{Denominator (Defense):} $\sigma_{\text{stock}, i}^2 \cdot L_i^2$
+    \begin{itemize}
+        \item This represents the Variance of the LEAPS ($\text{Variance}_{\text{leaps}}$).
+        \item \textbf{Critical Correction:} Risk scales with the \textbf{square} of the leverage ($L_i$). It must be divided by $L^2$ to prevent blowing up under high leverage. This is the mathematical iron law of applying Kelly to derivatives.
+    \end{itemize}
+    \item \textbf{Regulator:} $k$ is the Kelly fractional factor (e.g., 0.5 or 1.0), used to control overall aggressiveness.
+\end{itemize}
+
+\section{Phase 6: Portfolio Management — Normalization vs. Matrix Kelly}
+
+In actual investing, we may hold multiple assets simultaneously. We provide two approaches for capital allocation, ranging from simple to advanced.
+
+\subsection{Method 1: Simple Normalization}
+\textit{Suitable for: Small portfolios, low correlation between assets, or scenarios favoring calculation simplicity.}
+
+Assume there are $N$ assets. Calculate the nominal cash allocation $\text{cash}_i$ for each asset using the single asset formula.
+
+\textbf{1. Calculate Raw Total Exposure:}
+\[
+C_{\text{raw}} = \sum_{i=1}^{N} \text{cash}_i
+\]
+
+\textbf{2. Set Maximum Leverage Cap ($C_{\max}$):}
+For example, set the total account capital usage not to exceed 100\% or 120\%.
+
+\textbf{3. Linear Scaling:}
+If $C_{\text{raw}} > C_{\max}$, compress all positions proportionally:
+\[
+\text{cash}_i^{\text{final}} = \text{cash}_i \cdot \frac{C_{\max}}{C_{\text{raw}}}
+\]
+If $C_{\text{raw}} \le C_{\max}$, keep original positions unchanged.
+
+\textbf{Evaluation:}
+\begin{itemize}
+    \item \textbf{Pros:} Intuitive, prevents blowing up, preserves the relative strength of ERP among assets.
+    \item \textbf{Cons:} Ignores correlation. If the portfolio consists entirely of highly correlated semiconductor stocks (e.g., NVDA, AMD, TSM), the actual portfolio volatility risk may still be too high even after normalization.
+\end{itemize}
+
+\subsection{Method 2: Multivariate Matrix Kelly}
+\textit{Suitable for: Large capital, high asset correlation, or scenarios seeking the theoretically optimal mathematical solution.}
+
+When correlation exists between assets, the single asset formula ($\mu/\sigma^2$) no longer applies, and a \textbf{Covariance Matrix} must be introduced.
+
+\textbf{1. Define Parameters:}
+\begin{itemize}
+    \item $\mathbf{E}$: Excess Return Vector ($N \times 1$), where the $i$-th element is $\alpha_i \cdot \text{ERP}_i$.
+    \item $\mathbf{\Sigma}$: LEAPS Return Covariance Matrix ($N \times N$). Note that elements here should be $\text{Cov}(r_i \cdot L_i, r_j \cdot L_j)$.
+\end{itemize}
+
+\textbf{2. Matrix Kelly Formula:}
+The optimal position vector $\mathbf{F}^*$ (each element represents the fraction of total capital for that asset) is given by:
+
+\begin{tcolorbox}[colback=white, colframe=myblue]
+\[
+\mathbf{F}^* = k \cdot \mathbf{\Sigma}^{-1} \cdot \mathbf{E}
+\]
+\end{tcolorbox}
+
+Where $\mathbf{\Sigma}^{-1}$ is the inverse of the covariance matrix.
+
+\textbf{3. Mathematical Meaning:}
+\begin{itemize}
+    \item If two assets $i, j$ are highly positively correlated (move together), $\mathbf{\Sigma}^{-1}$ will automatically reduce the weights of both, acting as a ``penalty for crowded trades.''
+    \item If two assets are negatively correlated (hedging), the formula will automatically increase positions because the portfolio risk is reduced via hedging.
+\end{itemize}
+
+\textbf{Evaluation:}
+\begin{itemize}
+    \item \textbf{Pros:} This is the theoretical ``Holy Grail,'' capable of precisely handling correlation risk and maximizing risk-adjusted returns.
+    \item \textbf{Cons:} Computationally complex and extremely sensitive to estimation errors in the covariance matrix (``Garbage In, Garbage Out''). It typically requires imposing non-negative constraints ($\text{cash}_i \ge 0$) and total leverage constraints.
+\end{itemize}
+
+\subsection{Practical Recommendations}
+
+\begin{enumerate}
+    \item \textbf{Default Recommendation:} Use \textbf{Method 1 (Normalization)}. Although coarse, combined with our conservative $L^2$ denominator setting, it is usually safe enough.
+    \item \textbf{Advanced Risk Control:} If holding more than 5 assets in the same sector, it is recommended to manually lower the full portfolio $k$ value (e.g., from 1.0 to 0.7) to simulate the risk brought by correlation.
+\end{enumerate}
+
+\end{document}

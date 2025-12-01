@@ -33,7 +33,7 @@ V = 225.00              # Target Price
 V_hard = 130.00         # Hard Floor
 r_f = 0.041             # Risk-Free Rate (Annualized)
 beta = 0.2              # Valuation Discount Factor
-k = 1                   # Kelly Fraction
+k = 0.5                   # Kelly Fraction
 
 # ===============================
 # 4. Auto-fetch Statistical Data

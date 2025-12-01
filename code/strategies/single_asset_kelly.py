@@ -71,7 +71,7 @@ V = 225.00             # Target Price (Fair Value)
 V_hard = 130.00        # Hard Floor Price
 r_f = 0.041            # Risk-free Rate (Annualized 4.1%)
 beta = 0.2             # Valuation Discount Coeff
-k = 1.0                # Kelly Fraction (1.0 = Full Kelly)
+k = 0.5                # Kelly Fraction (1.0 = Full Kelly)
 
 # ===============================
 # 4. Core Logic Calculation (V23.2)

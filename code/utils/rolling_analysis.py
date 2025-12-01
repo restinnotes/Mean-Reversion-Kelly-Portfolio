@@ -38,17 +38,6 @@ pe_csv_dir = os.path.join(project_root, "pe_csv")
 def run_simulation(current_pe, target_pe, lambda_annual, sigma_daily, days_to_simulate=252, num_paths=10000):
     """
     Runs Monte Carlo simulation for P/E ratio using the Ornstein-Uhlenbeck process.
-
-    Parameters:
-    - current_pe (float): Starting value (X_0).
-    - target_pe (float): Long-term mean (Theta).
-    - lambda_annual (float): Annualized mean-reversion rate (Lambda).
-    - sigma_daily (float): Daily volatility (Sigma).
-    - days_to_simulate (int): Number of time steps.
-    - num_paths (int): Number of simulated paths.
-
-    Returns:
-    - numpy.ndarray: Simulated paths.
     """
     dt = 1/252
     paths = np.zeros((days_to_simulate + 1, num_paths))
@@ -193,11 +182,7 @@ def run_rolling_analysis(ticker, window_days=90):
 
     # --- Trigger Monte Carlo Simulation ---
     print("\n>>> STARTING VALUATION REPAIR SIMULATION <<<")
-    # Define Target: Let's assume Mean Reversion to the 90d Average
     P_target = current_mean
-    # Or user manual override:
-    # P_target = 33.0
-
     print(f"Goal: Repair from PE {current_pe:.2f} -> PE {P_target:.2f}")
     print(f"Using Stats: Lambda={current_lambda:.2f}, Sigma={current_sigma:.4f}")
 
@@ -213,23 +198,35 @@ def run_rolling_analysis(ticker, window_days=90):
 
     print("-" * 60)
     print(f"RECOMMENDATION:")
-    # Find timeframe with > 90% Touch Prob
+
+    # -------------------------------------------------------------------------
+    # Find 90% Touch Threshold directly
+    # -------------------------------------------------------------------------
     safe_days = 0
     safe_cal_days = 0
+    found_safe_zone = False
+
     for idx, row in df_probs.iterrows():
         if row['Touch Prob'] > 0.9:
-            print(f"   > 90% Probability to touch target within: {row['Trading Days']} Trading Days (~{row['~Calendar Days']})")
             safe_days = int(row['Trading Days'])
             safe_cal_days = int(row['~Calendar Days'].replace('d',''))
+
+            print(f"   > [STATISTICAL FLOOR] 90% Probability to touch target within:")
+            print(f"     {safe_days} Trading Days (~{safe_cal_days} Calendar Days)")
+            found_safe_zone = True
             break
 
-    if safe_days > 0:
-        # Suggest 3x margin
-        rec_expiry = safe_cal_days * 3
-        print(f"   > Suggested Expiry (3x Safety): > {rec_expiry} Calendar Days")
-        print(f"     (Buy options expiring in approx {rec_expiry/30:.1f} Months)")
+    if found_safe_zone:
+        # Direct Recommendation based on 90% threshold
+        print(f"\n   > [ACTION PLAN] Buy options with Expiry >= {safe_cal_days} DAYS")
+        print(f"     (Approx {safe_cal_days/30:.1f} Months)")
+        print(f"     * This is the minimum time required for a 90% win rate.")
+        print(f"     * Optimization: Choose the FURTHEST expiry available beyond this date")
+        print(f"       to minimize Theta cost, provided you can accept the capital lock-up.")
     else:
-        print(f"   > Reversion is slow/uncertain. Buy > 1 Year LEAPS.")
+        print(f"\n   > [WARNING] Reversion is slow/uncertain (90% prob not reached in 1 year).")
+        print(f"     Action: Buy > 1 Year LEAPS or Stay in Cash.")
+
     print("="*60)
 
 if __name__ == "__main__":

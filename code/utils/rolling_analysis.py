@@ -22,7 +22,6 @@ if os.path.exists(utils_dir) and utils_dir not in sys.path:
 try:
     from lambda_tools import calculate_ou_params
 except ImportError:
-    # Try importing assuming we are in code/ and tools are in utils/
     try:
         sys.path.append(os.path.join(current_dir, "utils"))
         from lambda_tools import calculate_ou_params
@@ -34,9 +33,23 @@ project_root = os.path.abspath(os.path.join(current_dir, "..", ".."))
 pe_csv_dir = os.path.join(project_root, "pe_csv")
 
 # ==========================================
-# 2. MONTE CARLO ENGINE (The New Part)
+# 2. MONTE CARLO ENGINE
 # ==========================================
 def run_simulation(current_pe, target_pe, lambda_annual, sigma_daily, days_to_simulate=252, num_paths=10000):
+    """
+    Runs Monte Carlo simulation for P/E ratio using the Ornstein-Uhlenbeck process.
+
+    Parameters:
+    - current_pe (float): Starting value (X_0).
+    - target_pe (float): Long-term mean (Theta).
+    - lambda_annual (float): Annualized mean-reversion rate (Lambda).
+    - sigma_daily (float): Daily volatility (Sigma).
+    - days_to_simulate (int): Number of time steps.
+    - num_paths (int): Number of simulated paths.
+
+    Returns:
+    - numpy.ndarray: Simulated paths.
+    """
     dt = 1/252
     paths = np.zeros((days_to_simulate + 1, num_paths))
     paths[0] = current_pe
@@ -50,6 +63,9 @@ def run_simulation(current_pe, target_pe, lambda_annual, sigma_daily, days_to_si
     return paths
 
 def analyze_probabilities(paths, target_pe, current_pe):
+    """
+    Analyzes simulated paths to calculate Touch and Hold probabilities.
+    """
     days_simulated = paths.shape[0] - 1
     # Check points in TRADING DAYS
     check_points = [21, 42, 63, 126, 189, 252]
@@ -60,11 +76,11 @@ def analyze_probabilities(paths, target_pe, current_pe):
         if day > days_simulated: continue
         final_values = paths[day]
 
-        # Hold Prob
+        # Hold Prob: probability of ending at or beyond the target
         if is_long: prob_end = np.mean(final_values >= target_pe)
         else: prob_end = np.mean(final_values <= target_pe)
 
-        # Touch Prob
+        # Touch Prob: probability of hitting or crossing the target at any point
         path_slice = paths[:day+1, :]
         if is_long: has_hit = np.any(path_slice >= target_pe, axis=0)
         else: has_hit = np.any(path_slice <= target_pe, axis=0)
@@ -85,9 +101,12 @@ def analyze_probabilities(paths, target_pe, current_pe):
     return pd.DataFrame(results)
 
 # ==========================================
-# 3. ROLLING ANALYSIS (The Original Part)
+# 3. ROLLING ANALYSIS
 # ==========================================
 def run_rolling_analysis(ticker, window_days=90):
+    """
+    Performs rolling OU parameter estimation, plots diagnostics, and runs MC simulation.
+    """
     csv_path = os.path.join(pe_csv_dir, f"{ticker}_pe.csv")
     if not os.path.exists(csv_path):
         print(f"[Error] Data not found: {csv_path}")
@@ -105,14 +124,14 @@ def run_rolling_analysis(ticker, window_days=90):
     pe_means = []
     lambdas_annual = []
     half_lives = []
-    sigmas_daily = [] # We need this for MC simulation!
+    sigmas_daily = []
 
     print(f"Calculating rolling metrics (Window={window_days}d)...")
 
     for i in range(len(df)):
         if i < window_days: continue
 
-        window_data = df.iloc[i-window_days : i]
+        window_data = df.iloc[i-window_days+1 : i+1]
         series = window_data.set_index('date')['value']
         ou = calculate_ou_params(series)
 
@@ -122,7 +141,7 @@ def run_rolling_analysis(ticker, window_days=90):
             pe_means.append(df.iloc[i]['rolling_mean'])
             lambdas_annual.append(ou['lambda'] * 252)
             half_lives.append(ou['half_life'])
-            sigmas_daily.append(ou['sigma']) # Capture sigma
+            sigmas_daily.append(ou['sigma'])
 
     if not lambdas_annual: return
 
@@ -135,7 +154,7 @@ def run_rolling_analysis(ticker, window_days=90):
     current_hl = half_lives[-1]
     current_pe = pe_values[-1]
     current_mean = pe_means[-1]
-    current_sigma = sigmas_daily[-1] # Latest volatility
+    current_sigma = sigmas_daily[-1]
 
     # Draw Plots
     fig, (ax0, ax1, ax2) = plt.subplots(3, 1, figsize=(12, 14), sharex=True)
@@ -161,15 +180,15 @@ def run_rolling_analysis(ticker, window_days=90):
     ax2.legend(loc='upper left'); ax2.grid(True, alpha=0.3)
 
     plt.tight_layout()
-    plt.show() # Show diagnosis chart first
+    plt.show()
 
     # --- Diagnostic Report ---
     print("\n" + "="*60)
-    print(f"  MARKET REGIME DIAGNOSIS: {ticker} ({dates[-1].date()})")
+    print(f"   MARKET REGIME DIAGNOSIS: {ticker} ({dates[-1].date()})")
     print("="*60)
-    print(f"Current PE        : {current_pe:.2f} (Avg: {current_mean:.2f})")
-    print(f"Current Lambda    : {current_lambda:.4f}")
-    print(f"Current Half-Life : {current_hl:.2f} Days")
+    print(f"Current PE          : {current_pe:.2f} (Avg: {current_mean:.2f})")
+    print(f"Current Lambda      : {current_lambda:.4f}")
+    print(f"Current Half-Life   : {current_hl:.2f} Days")
     print("-" * 30)
 
     # --- Trigger Monte Carlo Simulation ---
@@ -199,7 +218,7 @@ def run_rolling_analysis(ticker, window_days=90):
     safe_cal_days = 0
     for idx, row in df_probs.iterrows():
         if row['Touch Prob'] > 0.9:
-            print(f"  > 90% Probability to touch target within: {row['Trading Days']} Trading Days (~{row['~Calendar Days']})")
+            print(f"   > 90% Probability to touch target within: {row['Trading Days']} Trading Days (~{row['~Calendar Days']})")
             safe_days = int(row['Trading Days'])
             safe_cal_days = int(row['~Calendar Days'].replace('d',''))
             break
@@ -207,10 +226,10 @@ def run_rolling_analysis(ticker, window_days=90):
     if safe_days > 0:
         # Suggest 3x margin
         rec_expiry = safe_cal_days * 3
-        print(f"  > Suggested Expiry (3x Safety): > {rec_expiry} Calendar Days")
-        print(f"    (Buy options expiring in approx {rec_expiry/30:.1f} Months)")
+        print(f"   > Suggested Expiry (3x Safety): > {rec_expiry} Calendar Days")
+        print(f"     (Buy options expiring in approx {rec_expiry/30:.1f} Months)")
     else:
-        print(f"  > Reversion is slow/uncertain. Buy > 1 Year LEAPS.")
+        print(f"   > Reversion is slow/uncertain. Buy > 1 Year LEAPS.")
     print("="*60)
 
 if __name__ == "__main__":

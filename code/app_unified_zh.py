@@ -39,58 +39,73 @@ import matplotlib.font_manager as fm
 import matplotlib.pyplot as plt
 import os
 import sys
+import streamlit as st
+
+# 🔑 关键：使用 Streamlit Session State 防止重复配置
+if 'font_configured' not in st.session_state:
+    st.session_state.font_configured = False
 
 def configure_chinese_font():
     """
     配置中文字体,兼容本地和 Streamlit Cloud 环境
+    使用 session_state 确保只配置一次
     """
+    # 如果已经配置过,直接返回
+    if st.session_state.font_configured:
+        return
+
     try:
         # 方案 1: 尝试使用项目自带字体
         FONT_FILE_NAME = 'SimHei.ttf'
         FONT_PATH = os.path.join(os.getcwd(), "fonts", FONT_FILE_NAME)
 
         if os.path.exists(FONT_PATH):
-            print(f"Found custom font at: {FONT_PATH}")
+            print(f"✅ Found custom font at: {FONT_PATH}")
             fm.fontManager.addfont(FONT_PATH)
             prop = fm.FontProperties(fname=FONT_PATH)
             font_name = prop.get_name()
-            plt.rcParams['font.sans-serif'] = [font_name, 'DejaVu Sans']
+
+            # 关键：使用 insert(0) 确保优先级
+            if font_name not in plt.rcParams['font.sans-serif']:
+                plt.rcParams['font.sans-serif'].insert(0, font_name)
+
             plt.rcParams['axes.unicode_minus'] = False
-            print(f"Successfully loaded custom font: {font_name}")
+            print(f"✅ Successfully loaded custom font: {font_name}")
+            st.session_state.font_configured = True
             return
 
         # 方案 2: Streamlit Cloud - 使用系统中文字体
-        print("Custom font not found, trying system fonts...")
+        print("⚠️ Custom font not found, trying system fonts...")
 
-        # Linux 系统常见中文字体列表
+        # Linux 系统常见中文字体列表(按优先级排序)
         chinese_fonts = [
+            'Noto Sans CJK SC',       # 思源黑体(推荐)
+            'Noto Sans CJK TC',
             'WenQuanYi Micro Hei',    # 文泉驿微米黑
             'WenQuanYi Zen Hei',      # 文泉驿正黑
-            'Noto Sans CJK SC',       # 思源黑体
-            'Noto Sans CJK TC',
-            'SimHei',                  # 黑体
-            'Microsoft YaHei',         # 微软雅黑
-            'STHeiti',                 # 华文黑体
-            'Arial Unicode MS',
+            'Droid Sans Fallback',    # Android 字体
+            'AR PL UMing CN',
+            'SimHei',                 # 黑体
+            'Microsoft YaHei',        # 微软雅黑
         ]
 
         # 获取系统可用字体
         available_fonts = set([f.name for f in fm.fontManager.ttflist])
-        print(f"Available fonts on system: {len(available_fonts)}")
 
-        # 查找可用的中文字体
+        # 查找第一个可用的中文字体
         found_font = None
         for font in chinese_fonts:
             if font in available_fonts:
                 found_font = font
-                print(f"Found system Chinese font: {font}")
+                print(f"✅ Found system Chinese font: {font}")
                 break
 
         if found_font:
-            plt.rcParams['font.sans-serif'] = [found_font, 'DejaVu Sans']
+            # 清空现有配置,设置新字体
+            plt.rcParams['font.sans-serif'] = [found_font, 'DejaVu Sans', 'Arial']
         else:
-            # 方案 3: 安装 Noto Sans (最可靠)
-            print("No Chinese font found, using fallback with Noto Sans SC")
+            # 方案 3: 强制使用 Noto Sans(即使未检测到)
+            print("⚠️ No Chinese font detected, forcing Noto Sans SC")
             plt.rcParams['font.sans-serif'] = [
                 'Noto Sans CJK SC',
                 'DejaVu Sans',
@@ -98,16 +113,53 @@ def configure_chinese_font():
             ]
 
         plt.rcParams['axes.unicode_minus'] = False
-        print("Font configuration completed")
+
+        # 强制刷新字体缓存(关键步骤)
+        fm._rebuild()
+
+        print(f"✅ Font configuration completed: {plt.rcParams['font.sans-serif']}")
+        st.session_state.font_configured = True
 
     except Exception as e:
-        print(f"Font configuration error: {e}")
+        print(f"❌ Font configuration error: {e}")
         # 最终后备方案
         plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Arial']
         plt.rcParams['axes.unicode_minus'] = False
+        st.session_state.font_configured = True
 
-# 执行字体配置
+# 🔥 执行字体配置(只会运行一次)
 configure_chinese_font()
+
+
+# ==========================================
+# 额外优化：每次创建图表时都确认字体设置
+# ==========================================
+def ensure_chinese_font():
+    """
+    在每个绘图函数开始时调用,确保字体设置仍然有效
+    """
+    current_fonts = plt.rcParams['font.sans-serif']
+
+    # 检查是否有中文字体
+    has_chinese = any(
+        font in str(current_fonts)
+        for font in ['Noto', 'WenQuan', 'SimHei', 'YaHei', 'Hei', 'CJK']
+    )
+
+    if not has_chinese:
+        # 如果字体被重置,重新配置
+        print("⚠️ Font reset detected, reconfiguring...")
+        st.session_state.font_configured = False
+        configure_chinese_font()
+
+
+# ==========================================
+# 使用示例：在每个绘图函数开始时调用
+# ==========================================
+# 在你原来的 page_diagnosis 等函数中,绘图前加上:
+# ensure_chinese_font()
+# fig, ax = plt.subplots(...)
+# ...
 
 # ==========================================
 # 3. HELPER FUNCTIONS FOR MONTE CARLO
@@ -294,6 +346,7 @@ def page_diagnosis(ticker, window_days):
     hl_90 = np.percentile(half_lives_hist, 90)
 
     # Plot 1: PE Context
+    ensure_chinese_font()
     fig1, ax0 = plt.subplots(figsize=(10, 3))
     ax0.plot(plot_df.index, plot_df['value'], 'k', alpha=0.8, label='市盈率')
     ax0.plot(plot_df.index, plot_df['rolling_mean'], 'b--', label=f'{window_days}日滚动均值')
@@ -305,6 +358,7 @@ def page_diagnosis(ticker, window_days):
     plt.close(fig1)
 
     # Plot 2: Lambda
+    ensure_chinese_font()
     fig2, ax1 = plt.subplots(figsize=(10, 3))
     ax1.plot(plot_df.index, plot_df['Lambda'], color='#1f77b4', label='年化 Lambda')
     ax1.axhline(lambda_80, color='r', linestyle='--', label=f'80%分位 ({lambda_80:.1f})')
@@ -317,6 +371,7 @@ def page_diagnosis(ticker, window_days):
     plt.close(fig2)
 
     # Plot 3: Half-Life
+    ensure_chinese_font()
     fig3, ax2 = plt.subplots(figsize=(10, 3))
     ax2.plot(plot_df.index, plot_df['Half_Life'], color='#ff7f0e', label='半衰期 (交易日)')
     ax2.axhline(hl_90, color='purple', linestyle='--', label=f'90%分位风险 ({hl_90:.1f}日)')
@@ -346,7 +401,7 @@ def page_diagnosis(ticker, window_days):
         if not roll_vol.empty:
             current = roll_vol.iloc[-1]
             pval = roll_vol.quantile(percentile)
-
+            ensure_chinese_font()
             fig4, ax3 = plt.subplots(figsize=(10, 4))
 
             ax3.plot(index_for_plot, roll_vol.values, linewidth=1.4, label=f'{window}日滚动年化波动率')
@@ -439,7 +494,7 @@ def page_solver(P_CURRENT, V_TARGET, V_HARD_FLOOR, V_FILL_PLAN, LAMBDA, SIGMA_AS
     st.markdown("---")
     st.markdown("##### 攻守平衡曲线图")
     st.caption("最优解为进攻曲线 (0.5 * Kelly) 与防守上限 (Pilot Cash Cap) 的交点。")
-
+    ensure_chinese_font()
     fig, ax = plt.subplots(figsize=(10, 6))
 
     ax.plot(df['Days'], df['Kelly_Half'], label='进攻曲线: 0.5 * Kelly 比例',

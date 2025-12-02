@@ -29,6 +29,13 @@ try:
     from optimal_expiry_solver import bs_greek_calculator, calculate_single_asset_kelly_ratio
 except ImportError as e:
     st.error(f"Module import error. Please ensure dependency files (lambda_tools.py, sigma_tools.py, optimal_expiry_solver.py) are accessible relative to the app structure: {e}")
+    # Define placeholder functions to prevent crashes if imports fail completely
+    # This is crucial for Streamlit apps running in environments without custom module support
+    def get_ou_for_ticker(*args, **kwargs): return None
+    def calculate_ou_params(*args, **kwargs): return None
+    def get_sigma(*args, **kwargs): return ({}, {}, {}, {})
+    def bs_greek_calculator(*args, **kwargs): return (0, 0, 0)
+    def calculate_single_asset_kelly_ratio(*args, **kwargs): return 0.0
     pass
 
 
@@ -203,7 +210,7 @@ def page_diagnosis(ticker, window_days):
     dates_hist = []; lambdas_annual_hist = []; half_lives_hist = []; sigmas_daily_hist = []
     start_index = window_days - 1
 
-    if 'calculate_ou_params' in globals():
+    if 'calculate_ou_params' in globals() and calculate_ou_params:
         for i in range(start_index, len(df)):
             window_series = df.iloc[i-window_days+1 : i+1].set_index('date')['value']
             try:
@@ -216,7 +223,7 @@ def page_diagnosis(ticker, window_days):
             except Exception:
                 continue
     else:
-        st.error("依赖模块 (lambda_tools.py) 未导入。")
+        st.error("依赖模块 (lambda_tools.py) 未导入或函数缺失。")
         return
 
     if not lambdas_annual_hist:
@@ -229,6 +236,29 @@ def page_diagnosis(ticker, window_days):
     current_mean = df['rolling_mean'].iloc[-1]
     current_sigma_daily = sigmas_daily_hist[-1]
 
+    # New code for T-stat calculation and display logic START
+
+    # 获取 t_stat
+    # 获取用于计算 current_lambda 的最新窗口数据
+    ou_last_snapshot = calculate_ou_params(df['value'].iloc[-window_days:])
+    current_t_stat = ou_last_snapshot.get('t_stat', 0.0) if ou_last_snapshot else 0.0
+
+    # 判定置信度文案
+    if current_t_stat < -2.86:
+        conf_label = "⭐⭐⭐ 极高 (Strong)"
+        conf_color = "green"
+        conf_help = "统计显著性 > 95%。拒绝随机游走假设，均值回归特征非常明显。"
+    elif current_t_stat < -1.90:
+        conf_label = "⭐⭐ 较高 (Moderate)"
+        conf_color = "orange"
+        conf_help = "统计显著性 > 90%。均值回归特征存在，但需留意。"
+    else:
+        conf_label = "⚠️ 存疑 (Weak)"
+        conf_color = "red"
+        conf_help = f"T-Stat ({current_t_stat:.2f}) 不显著。当前走势可能接近随机游走，Lambda 值参考意义下降。"
+
+    # New code for T-stat calculation and display logic END
+
     # 将 Lambda 存入 Session 供后续使用
     if st.session_state.ticker == ticker:
         st.session_state['lambda'] = current_lambda
@@ -239,15 +269,22 @@ def page_diagnosis(ticker, window_days):
     # =========================================================
     st.subheader("1. 核心参数验证 (Diagnosis)")
 
-    col_d1, col_d2 = st.columns(2)
+    col_d1, col_d2, col_d3 = st.columns(3) # 改为 3 列
+
     with col_d1:
         st.markdown("**估值偏离度**")
         st.code(f"当前 PE: {current_pe:.2f}")
-        st.code(f"均值 PE: {current_mean:.2f}")
+        st.metric("均值偏离", f"{(current_pe - current_mean)/current_mean:.1%}")
+
     with col_d2:
         st.markdown("**回归动力 (Lambda)**")
-        st.code(f"当前 Lambda: {current_lambda:.4f}")
-        st.code(f"半衰期: {current_hl:.1f} 天")
+        st.code(f"λ: {current_lambda:.4f}")
+        st.caption(f"半衰期: {current_hl:.1f} 天")
+
+    with col_d3:
+        st.markdown("**统计可信度 (ADF Test)**")
+        st.markdown(f":{conf_color}[**{conf_label}**]")
+        st.caption(f"T-Stat: {current_t_stat:.2f}", help=conf_help)
 
     # --- 历史图表 (Visual Verification) ---
     # Plot 1: PE Context
@@ -277,6 +314,7 @@ def page_diagnosis(ticker, window_days):
 
     # Plot 3: Sigma (Volatility Check)
     st.markdown("**波动率验证 (Sigma Check)**")
+    # 仅当 session state 中有数据时才绘制图表
     if st.session_state.get('sigma_rolling_data') and ticker in st.session_state.sigma_rolling_data:
         roll_vol = st.session_state.sigma_rolling_data[ticker]
         sigma_val = st.session_state.sigma_dict[ticker]
@@ -294,7 +332,7 @@ def page_diagnosis(ticker, window_days):
         st.pyplot(fig4)
         plt.close(fig4)
     else:
-        st.info("请在左侧点击 '获取历史统计数据' 以查看波动率图表。")
+        st.info("💡 正在自动加载数据，请稍候。")
 
     st.markdown("---")
 
@@ -314,6 +352,11 @@ def page_diagnosis(ticker, window_days):
     }
 
     # 运行模拟
+    # Check if sigma_daily is available and sensible before running simulation
+    if current_sigma_daily is None or current_sigma_daily == 0:
+        st.warning("日内 Sigma (波动率) 数据缺失或为零，无法运行蒙特卡洛模拟。")
+        return
+
     paths = run_simulation(current_pe, current_mean, current_lambda, current_sigma_daily, days_to_simulate=200)
 
     # 分析分布
@@ -331,7 +374,6 @@ def page_diagnosis(ticker, window_days):
         hide_index=True,
         use_container_width=True
     )
-
 
 
     # 模拟路径分布图
@@ -365,20 +407,7 @@ def page_solver(P_CURRENT, V_TARGET, V_HARD_FLOOR, V_FILL_PLAN, LAMBDA, SIGMA_AS
     st.subheader(f"资产: {ticker} | 目标: 在 {V_FILL_PLAN} 时打满子弹")
     st.markdown("---")
 
-    # --- 1. 策略配置区 (新增) ---
-    with st.expander("❓ 什么是“动态 K 值”求解？", expanded=True):
-        st.markdown(f"""
-            **核心思想**：
-            通常我们在建仓时比较谨慎（使用较小的 $k$，如 0.5），但随着股价下跌，安全边际变大，我们的信心会增强（使用较大的 $k$，如 1.0）。
-
-            **本工具的目标**：
-            寻找一张合约，使得：
-            1.  **现在 ($P={P_CURRENT}$)**：应用 **起始 K={K_FACTOR}** 时，仓位适中。
-            2.  **到底 ($P={V_FILL_PLAN}$)**：应用 **最终 K={V_FILL_PLAN}** 时，建议仓位 **恰好为 100%**。
-
-            这样你就能设计出一个“越跌越买，到底正好满仓”的完美加仓路径。
-        """)
-
+    # [FIX] Move k_fill_target definition before the expander that uses it
     # 新增：目标 K 值输入
     col_k1, col_k2 = st.columns(2)
     with col_k1:
@@ -388,12 +417,27 @@ def page_solver(P_CURRENT, V_TARGET, V_HARD_FLOOR, V_FILL_PLAN, LAMBDA, SIGMA_AS
         # 允许用户设定补仓时的 K
         # MODIFIED: Default value set to 0.5 per user request (Constant K strategy by default)
         k_fill_target = st.number_input("满仓 K 值 (Target at Fill)",
-                                      min_value=K_FACTOR, max_value=2.0, value=0.5, step=0.1,
-                                      help="当股价跌到 V_fill 时，你愿意使用多大的 K 值？通常设为 0.5 (保持不变) 或 1.0 (激进加仓)。")
+                                     min_value=K_FACTOR, max_value=2.0, value=0.5, step=0.1,
+                                     help="当股价跌到 V_fill 时，你愿意使用多大的 K 值？通常设为 0.5 (保持不变) 或 1.0 (激进加仓)。")
+
+
+    # --- 1. 策略配置区 (新增) ---
+    with st.expander("❓ 什么是“动态 K 值”求解？", expanded=True):
+        st.markdown(f"""
+            **核心思想**：
+            通常我们在建仓时比较谨慎（使用较小的 $k$，如 0.5），但随着股价下跌，安全边际变大，我们的信心会增强（使用较大的 $k$，如 1.0）。
+
+            **本工具的目标**：
+            寻找一张合约，使得：
+            1.  **现在 ($P={P_CURRENT}$)**：应用 **起始 K={K_FACTOR}** 时，仓位适中。
+            2.  **到底 ($P={V_FILL_PLAN}$)**：应用 **最终 K={k_fill_target}** 时，建议仓位 **恰好为 100%**。
+
+            这样你就能设计出一个“越跌越买，到底正好满仓”的完美加仓路径。
+        """)
 
     st.markdown("---")
 
-    if 'bs_greek_calculator' not in globals() or 'calculate_single_asset_kelly_ratio' not in globals():
+    if 'bs_greek_calculator' not in globals() or not bs_greek_calculator or 'calculate_single_asset_kelly_ratio' not in globals() or not calculate_single_asset_kelly_ratio:
         st.error("依赖模块 (optimal_expiry_solver.py) 未导入，无法进行求解。")
         return
 
@@ -482,11 +526,11 @@ def page_solver(P_CURRENT, V_TARGET, V_HARD_FLOOR, V_FILL_PLAN, LAMBDA, SIGMA_AS
 
         # 2. 计算期权和凯利
         c, d, t_val = bs_greek_calculator(p, V_HARD_FLOOR, T_best, R_RISKFREE, IV_PRICING)
-        k_ratio_raw = calculate_single_asset_kelly_ratio(
+        kelly_ratio_raw = calculate_single_asset_kelly_ratio(
             p, c, d, t_val, V_TARGET, V_HARD_FLOOR, LAMBDA, SIGMA_ASSET, R_RISKFREE, beta=BETA
         )
 
-        final_alloc = k_ratio_raw * k_dynamic
+        final_alloc = kelly_ratio_raw * k_dynamic
         sim_allocations.append(final_alloc)
         sim_ks.append(k_dynamic)
 
@@ -567,9 +611,14 @@ def page_dashboard(ticker, lambda_val, sigma_val, r_f, k_factor, beta, P, V_targ
 
     # MODIFIED: CAPPED at 100% logic
     if P <= V_fill:
-        f_cash = 1.0
+        # When price hits or breaches V_fill, use k_fill as the factor, and cap at 1.0
+        # Recalculate f_cash using k_fill, then cap at 1.0, ensuring dynamic k is used at fill point
+        f_cash_raw = (k_fill * alpha * ERP) / variance_leaps if (ERP > 0 and variance_leaps > 0) else 0.0
+        f_cash = min(1.0, max(0.0, f_cash_raw))
     else:
+        # When price is above V_fill, use the standard k_factor (Start K) and cap at 1.0
         f_cash = min(1.0, f_cash)
+
 
     # --- Calculate Contracts ---
     contract_cost = opt_price * 100
@@ -676,9 +725,16 @@ def page_dashboard(ticker, lambda_val, sigma_val, r_f, k_factor, beta, P, V_targ
 
             # MODIFIED: Cap logic in chart
             if p_sim <= V_fill:
-                 final_alloc = 1.0
+                 # Re-calculate allocation using k_fill and cap at 1.0
+                k_fill_dynamic = k_fill
+                kelly_ratio_raw_at_fill = calculate_single_asset_kelly_ratio(
+                    p_sim, c_sim, d_sim, t_val_sim, V_target, V_hard, lambda_val, sigma_val, r_f, beta=beta
+                )
+                final_alloc = kelly_ratio_raw_at_fill * k_fill_dynamic
+                final_alloc = min(1.0, final_alloc)
             else:
-                 final_alloc = min(1.0, final_alloc)
+                final_alloc = min(1.0, final_alloc)
+
 
             # Ensure allocation is non-negative
             final_alloc = max(0.0, final_alloc)
@@ -715,8 +771,12 @@ def page_dashboard(ticker, lambda_val, sigma_val, r_f, k_factor, beta, P, V_targ
 
         # 标记关键点
         ax1.scatter([P], [f_cash], color='black', s=100, zorder=5, label=f'当前点 P (${P:.2f})')
-        ax1.scatter([V_fill], allocations[np.argmin(np.abs(sim_prices - V_fill))], color='red', s=100, zorder=5, label=f'补仓点 V_fill (${V_fill:.2f})')
-        ax1.scatter([V_hard], allocations[np.argmin(np.abs(sim_prices - V_hard))], color='green', s=100, zorder=5, label=f'硬底 V_hard (${V_hard:.2f})')
+        # Find the allocation near V_fill
+        v_fill_alloc_index = np.argmin(np.abs(sim_prices - V_fill))
+        ax1.scatter([V_fill], allocations[v_fill_alloc_index], color='red', s=100, zorder=5, label=f'补仓点 V_fill (${V_fill:.2f})')
+        # Find the allocation near V_hard
+        v_hard_alloc_index = np.argmin(np.abs(sim_prices - V_hard))
+        ax1.scatter([V_hard], allocations[v_hard_alloc_index], color='green', s=100, zorder=5, label=f'硬底 V_hard (${V_hard:.2f})')
 
         # 增加图例
         lines, labels = ax1.get_legend_handles_labels()
@@ -743,30 +803,36 @@ def page_dashboard(ticker, lambda_val, sigma_val, r_f, k_factor, beta, P, V_targ
 
         # Look Down (Buying)
         buy_points = []
-        for i in range(len(sim_prices)-1):
-            if sim_prices[i] > P: continue # Only look at prices below current
-            # Scan backwards from P
-            idx = len(sim_prices) - 1 - i
-            if sim_prices[idx] > P: continue
-
+        # [FIX 1] 修复循环范围，确保能扫描到 V_hard (数组最底端，index=0)
+        # Iterate backwards through prices (from highest to lowest)
+        for i in range(len(sim_prices)):
+            idx = len(sim_prices) - 1 - i # Start from the lowest price V_hard
+            p_val = sim_prices[idx]
             c_val = contracts_series[idx]
-            # Check if we crossed a step threshold relative to current
+
+            if p_val > P: continue # Only look at prices below current
+
             # We want to find p where contracts >= current + step, current + 2*step...
+            # Look for the contract count where it crosses the next threshold
             next_threshold = current_c + (len(buy_points) + 1) * step_size
             if c_val >= next_threshold:
-                 buy_points.append((sim_prices[idx], c_val))
+                 buy_points.append((p_val, c_val)) # 这里存 c_val 没问题
                  if len(buy_points) >= 3: break # Show top 3
 
         # Look Up (Selling)
         sell_points = []
+        # Iterate forwards through prices (from lowest to highest)
         for i in range(len(sim_prices)):
-             if sim_prices[i] < P: continue
-             c_val = contracts_series[i]
-             # We want to find p where contracts <= current - step
-             next_threshold = current_c - (len(sell_points) + 1) * step_size
-             if c_val <= next_threshold and next_threshold >= 0:
-                 sell_points.append((sim_prices[i], c_val))
-                 if len(sell_points) >= 3: break
+            p_val = sim_prices[i]
+            c_val = contracts_series[i]
+
+            if p_val < P: continue
+
+            # We want to find p where contracts <= current - step
+            next_threshold = current_c - (len(sell_points) + 1) * step_size
+            if c_val <= next_threshold and next_threshold >= 0:
+                sell_points.append((p_val, c_val))
+                if len(sell_points) >= 3: break
 
         col_buy, col_sell = st.columns(2)
         with col_buy:
@@ -775,20 +841,27 @@ def page_dashboard(ticker, lambda_val, sigma_val, r_f, k_factor, beta, P, V_targ
                 st.write("无近期加仓点 (或已接近满仓)")
             else:
                 for p_val, c_val in buy_points:
-                    st.write(f"- 跌至 **${p_val:.2f}** : 加至 **{int(c_val)}** 张 (+{step_size}张)")
+                    # 重新计算目标持仓数量用于显示
+                    idx_buy = buy_points.index((p_val, c_val))
+                    target_hold = current_c + (idx_buy + 1) * step_size
+
+                    st.write(f"- 跌至 **${p_val:.2f}** : 加至 **{int(target_hold)}** 张 (+{step_size}张)")
 
         with col_sell:
-             st.markdown("##### 📈 上涨减仓参考")
-             if not sell_points:
-                 st.write("无近期减仓点 (或已空仓)")
-             else:
+            st.markdown("##### 📈 上涨减仓参考")
+            if not sell_points:
+                st.write("无近期减仓点 (或已空仓)")
+            else:
                  for p_val, c_val in sell_points:
-                     st.write(f"- 涨至 **${p_val:.2f}** : 减至 **{int(c_val)}** 张 (-{step_size}张)")
+                     # [FIX 2] 计算目标台阶，而不是显示计算出的浮动值
+                     # 也就是：当前持仓 - (这是第几次卖出 * 步长)
+                     idx_sell = sell_points.index((p_val, c_val))
+                     target_hold = current_c - (idx_sell + 1) * step_size
+
+                     st.write(f"- 涨至 **${p_val:.2f}** : 减至 **{int(target_hold)}** 张 (-{step_size}张)")
 
 
     st.markdown("---")
-
-
 
 
     # --- G. Stress Test (NEW FEATURE) ---
@@ -835,7 +908,7 @@ def page_dashboard(ticker, lambda_val, sigma_val, r_f, k_factor, beta, P, V_targ
 
         risk_df = pd.DataFrame(risk_table)
         st.table(risk_df)
-        st.caption("*注：此处使用有效杠杆 (L) 进行线性估算，实际期权在暴跌中的跌幅可能因 Gamma/Vega 效应有所不同。仅供风控参考。如果 $3\sigma$ 亏损额让你感到恐慌，请在侧边栏调低 $k$ 值。")
+        st.caption("*注：此处使用有效杠杆 (L) 进行线性估算，实际期权在暴跌中的跌幅可能因 Gamma/Vega 效应有所不同。仅供风控参考。如果 $3\\sigma$ 亏损额让你感到恐慌，请在侧边栏调低 $k$ 值。")
 
 
     # --- Save to Portfolio Feature ---
@@ -865,7 +938,7 @@ def page_dashboard(ticker, lambda_val, sigma_val, r_f, k_factor, beta, P, V_targ
                 st.success(f"✅ 已更新 {ticker} 的组合数据")
             else:
                 if 'portfolio_data' not in st.session_state:
-                       st.session_state['portfolio_data'] = []
+                        st.session_state['portfolio_data'] = []
                 st.session_state['portfolio_data'].append(asset_record)
                 st.success(f"✅ 已将 {ticker} 添加到组合")
 
@@ -885,7 +958,7 @@ def page_multi_asset_normalization(max_leverage_cap):
             **1. 高相关性资产 (例如：同板块股票或指数)**
             * **原则:** 当资产相关性高时，风险分散效果差。建议将原始 Kelly 值进行**内部加权平均**，而非简单相加，以此平均值作为 $C_{max}$ 或略高的上限。
             * **案例:** 如果资产A (Kelly $65\%$, 信心 $2$) 和资产B (Kelly $45\%$, 信心 $1$)，您可以考虑将最终上限 $C_{max}$ 设置为他们的**信心加权平均**：
-                $$C_{max} \approx \frac{65\% \times 2 + 45\% \times 1}{2 + 1} \approx 58.33\%$$
+                 $$C_{max} \approx \frac{65\% \times 2 + 45\% \times 1}{2 + 1} \approx 58.33\%$$
             * **操作:** 将计算出的加权平均值（例如 $0.58$）作为 $C_{max}$ 阈值输入到左侧边栏的滑块中。
 
             **2. 低相关性资产 (例如：跨市场指数)**
@@ -989,42 +1062,65 @@ with st.sidebar:
                     key='page_select', index=0)
 
     st.header("1. 资产与统计数据")
+
+    # --- 1. 输入框 ---
+    # 使用 key='ticker_global' 绑定状态
     ticker = st.text_input("股票代码 (Ticker)", value=st.session_state.ticker, key='ticker_global').upper()
 
-    if st.button("获取历史统计数据"):
+    # --- 2. 自动获取数据逻辑 (Auto-Fetch) ---
+    # 定义判断条件：
+    # A. 刚打开 App，还没有 fetch 过 (last_fetched_ticker 不存在)
+    # B. 用户修改了输入框内容 (ticker != last_fetched_ticker)
+    # C. 数据丢失 (sigma_dict 不在 session 中)
+    need_refresh = (ticker != st.session_state.get('last_fetched_ticker')) or \
+                   ('sigma_dict' not in st.session_state)
+
+    if need_refresh:
+        # 检查依赖是否存在
         if 'get_ou_for_ticker' in globals() and 'get_sigma' in globals():
             try:
-                with st.spinner("Calculating OU Params & Volatility..."):
-                    ou = get_ou_for_ticker(ticker, window=90)
-                    new_lambda = ou["lambda"] * 252.0
+                # 使用 spinner 提示用户正在后台计算
+                with st.spinner(f"正在自动计算 {ticker} 的历史波动率与回归参数..."):
+
+                    # === 以下是原按钮内的获取逻辑 (原封不动搬运) ===
+                    ou_window = st.session_state.get('window_days', 90)
+                    ou = get_ou_for_ticker(ticker, window=ou_window)
+                    # Handle None from OU calculation
+                    new_lambda = ou["lambda"] * 252.0 if ou and ou["lambda"] is not None else st.session_state.get('lambda', 6.0393)
 
                     sigma_dict, _, _, rolling_series_dict = get_sigma(
                         [ticker], period="5y", window=252, percentile=0.85, annualize=True, safety_lock=True
                     )
                     new_sigma = sigma_dict.get(ticker)
 
+                    # === 更新 Session State ===
                     st.session_state['lambda'] = new_lambda
                     st.session_state['sigma'] = new_sigma
                     st.session_state['ticker'] = ticker
 
+                    # 关键：保存图表所需的详细数据
                     st.session_state['sigma_rolling_data'] = rolling_series_dict
                     st.session_state['sigma_dict'] = sigma_dict
 
-                    st.info(f"✅ 已检测到滚动窗口统计值: Lambda (λ) = **{new_lambda:.4f}**, Sigma (σ) = **{new_sigma:.4f}**")
-                    st.warning("⚠️ 请评估该值是否过于激进，确认后请手动输入到左侧边栏以应用到后续计算")
+                    # === 标记：记录当前已获取的 Ticker，防止重复刷新 ===
+                    st.session_state['last_fetched_ticker'] = ticker
 
             except Exception as e:
-                st.error(f"Error fetching data: {e}")
-            finally:
-                pass
+                st.error(f"❌ 数据获取失败: {e}")
         else:
             st.error("依赖模块 (lambda_tools.py / sigma_tools.py) 未导入，无法获取历史数据。")
 
+    # --- 3. 如果数据已就绪，显示简报 ---
+    if st.session_state.get('last_fetched_ticker') == ticker and 'lambda' in st.session_state:
+         # 保持用户要求的显示精度
+         st.caption(f"✅ 已加载: λ={st.session_state['lambda']:.2f}, σ={st.session_state['sigma']:.1%}")
+
     st.divider()
+
     lambda_val = st.number_input("年化 Lambda (λ)", value=st.session_state['lambda'], key='lambda_global', format="%.4f",
-                               help="【均值回归动力】数值越大，修复越快。若图表显示 Lambda 处于历史极高位(>80分位)，建议手动调低以提高安全边际。")
+                                 help="【均值回归动力】数值越大，修复越快。若图表显示 Lambda 处于历史极高位(>80分位)，建议手动调低以提高安全边际。")
     sigma_val = st.number_input("年化 Sigma (σ)", value=st.session_state['sigma'], key='sigma_global', format="%.4f",
-                              help="【保守波动率】通常取历史 85% 分位数。用于计算凯利公式的分母(风险)。")
+                                 help="【保守波动率】通常取历史 85% 分位数。用于计算凯利公式的分母(风险)。")
 
     st.header("2. 策略与市场参数 (动态)")
 
@@ -1067,23 +1163,23 @@ with st.sidebar:
 
             # NEW INPUT: Max K at Fill
             current_k_fill = st.number_input("满仓 K (Max at Fill)",
-                                      min_value=current_k_factor, max_value=2.0, value=st.session_state.k_fill, step=0.1,
-                                      key='k_fill_dash',
-                                      help="当股价跌至 V_fill 时，信心增强，K 值线性增加至此值。")
+                                     min_value=current_k_factor, max_value=2.0, value=st.session_state.k_fill, step=0.1,
+                                     key='k_fill_dash',
+                                     help="当股价跌至 V_fill 时，信心增强，K 值线性增加至此值。")
 
             current_beta = st.slider("估值折扣系数 (beta)", 0.0, 1.0, st.session_state.beta, 0.05, key='beta_dash',
-                                     help="【止盈速率/信心衰减】0.2 = 推荐。股价接近目标价时，Alpha 保留 80% 权重。1.0 = 到达目标价即清仓。")
+                                         help="【止盈速率/信心衰减】0.2 = 推荐。股价接近目标价时，Alpha 保留 80% 权重。1.0 = 到达目标价即清仓。")
 
             st.subheader("2.2 市场与合约参数")
             current_P = st.number_input("当前股价 P ($)", value=st.session_state.P, key='P_dash', format="%.2f")
             current_V_target = st.number_input("目标价 V ($)", value=st.session_state.V_target, key='V_target_dash', format="%.2f",
-                                               help="【公允价值】你认为标的最终应值多少钱？影响预期收益(Drift)。")
+                                                 help="【公允价值】你认为标的最终应值多少钱？影响预期收益(Drift)。")
             current_V_hard = st.number_input("硬底 V_hard ($)", value=st.session_state.V_hard, key='V_hard_dash', format="%.2f",
-                                             help="【止损锚点】极端悲观下绝对不会跌破的价格。建议买入 Strike 接近此价格的期权，物理锁死尾部风险。")
+                                                 help="【止损锚点】极端悲观下绝对不会跌破的价格。建议买入 Strike 接近此价格的期权，物理锁死尾部风险。")
 
             # Added V_fill for dynamic calculation
             current_V_fill = st.number_input("计划补仓价 V_fill ($)", value=st.session_state.V_fill, key='V_fill_dash', format="%.2f",
-                                            help="【满仓线】当股价跌至此价格时，总仓位将提升至 1.0K 的理论最大值。")
+                                                 help="【满仓线】当股价跌至此价格时，总仓位将提升至 1.0K 的理论最大值。")
 
 
             st.divider()
@@ -1118,7 +1214,7 @@ with st.sidebar:
             current_k_factor = st.slider("凯利分数 (k)", 0.1, 1.0, st.session_state.k_factor, 0.05, key='k_solver_factor',
                                          help="【激进程度】影响进攻曲线 (Kelly) 的起始位置。")
             current_beta = st.slider("估值折扣系数 (beta)", 0.0, 1.0, st.session_state.beta, 0.05, key='beta_solver',
-                                     help="【信心衰减】影响 Kelly 计算中 Alpha 的折扣率。")
+                                         help="【信心衰减】影响 Kelly 计算中 Alpha 的折扣率。")
             # --- END ADDED ---
 
             st.subheader("2.2 市场与定价参数")

@@ -3,18 +3,21 @@ import pandas as pd
 import os
 
 # ============================================================================
-# PART 1 — SIMPLE OLS (NO statsmodels)
+# PART 1 — SIMPLE OLS (UPDATED with Standard Error)
 # ============================================================================
 
 def ols_regression(X, y):
     """
     Perform a simple OLS regression of y on X (with intercept).
+    Returns beta, residuals, r_squared, AND standard_errors.
     """
     X = np.asarray(X)
     y = np.asarray(y)
+    n = len(y)
 
     # Add constant column (intercept)
-    X_with_const = np.column_stack([np.ones(len(X)), X])
+    X_with_const = np.column_stack([np.ones(n), X])
+    p = X_with_const.shape[1] # Number of parameters (2: alpha, beta)
 
     # Normal equation components
     XtX = X_with_const.T @ X_with_const
@@ -22,10 +25,11 @@ def ols_regression(X, y):
 
     # Solve β = (X^T X)^(-1) X^T y
     try:
-        beta = np.linalg.solve(XtX, Xty)
+        # Compute inverse for Standard Error calculation
+        XtX_inv = np.linalg.inv(XtX)
+        beta = XtX_inv @ Xty
     except np.linalg.LinAlgError:
-        # Handle singular matrix
-        return None, None, 0
+        return None, None, 0, None
 
     # Predictions
     y_pred = X_with_const @ beta
@@ -38,62 +42,75 @@ def ols_regression(X, y):
     ss_tot = np.sum((y - y.mean())**2)
     r_squared = 1 - ss_res / ss_tot if ss_tot > 0 else 0
 
-    return beta, residuals, r_squared
+    # --- NEW: Standard Error & T-Stat Calculation ---
+    # Variance of residuals (MSE)
+    if n > p:
+        mse = ss_res / (n - p)
+        # Variance-Covariance Matrix of Beta: MSE * (X'X)^-1
+        var_beta = mse * XtX_inv
+        # Standard Errors are sqrt of diagonal elements
+        se_beta = np.sqrt(np.diag(var_beta))
+    else:
+        se_beta = np.zeros_like(beta)
+
+    return beta, residuals, r_squared, se_beta
 
 
 # ============================================================================
-# PART 2 — OU PARAMETER CALCULATION
+# PART 2 — OU PARAMETER CALCULATION (UPDATED with Confidence)
 # ============================================================================
 
 def calculate_ou_params(series, dt=1):
     """
-    Estimate OU (Ornstein-Uhlenbeck) parameters from a time series.
+    Estimate OU parameters and confidence metrics.
     """
     series = series.dropna()
+    if len(series) < 10: return None
 
-    # Require sufficient data points
-    if len(series) < 10:
-        return None
-
-    # x_t and x_{t+1}
     x_t  = series[:-1].values
     x_t1 = series[1:].values
 
     # Linear regression: x_{t+1} = alpha + beta * x_t + ε
     results = ols_regression(x_t, x_t1)
-    if results[0] is None:
-        return None
+    if results[0] is None: return None
 
-    params, residuals, r2 = results
+    # Unpack including SE
+    params, residuals, r2, se_params = results
     alpha, beta = params
+    alpha_se, beta_se = se_params
+
     resid_std = residuals.std()
 
-    # If beta >= 1 ➜ non-stationary, no mean reversion
+    # --- Confidence Calculation ---
+    # Null Hypothesis: Beta = 1 (Random Walk)
+    # T-statistic = (Beta - 1) / SE(Beta)
+    # Interpretation: More negative = Stronger Evidence of Reversion
+    if beta_se > 0:
+        t_stat_adf = (beta - 1) / beta_se
+    else:
+        t_stat_adf = 0.0
+
+    # ------------------------------
+
     if beta >= 1:
         return {
-            'lambda': 0.01,              # fallback small λ
-            'theta': series.mean(),      # mean
+            'lambda': 1e-4,
+            'theta': series.mean(),
             'sigma': resid_std,
             'half_life': np.inf,
-            'beta': beta,
-            'alpha': alpha,
             'r_squared': r2,
+            't_stat': t_stat_adf, # return t-stat even if non-stationary
             'status': "NON_STATIONARY"
         }
 
-    # Convert OU discrete beta into continuous-time lambda
     lam = -np.log(beta) / dt
-
-    # OU long-term mean theta
     theta = alpha / (1 - beta)
 
-    # OU volatility conversion (standard formula)
     if 0 < beta < 1:
         sigma = resid_std * np.sqrt(-2 * np.log(beta) / (1 - beta**2) / dt)
     else:
         sigma = resid_std / np.sqrt(dt)
 
-    # Half-life = ln(2) / λ
     half_life = np.log(2) / lam if lam > 0 else np.inf
 
     return {
@@ -102,37 +119,13 @@ def calculate_ou_params(series, dt=1):
         'sigma': sigma,
         'half_life': half_life,
         'half_life_years': half_life / 252,
-        'beta': beta,
-        'alpha': alpha,
         'r_squared': r2,
-        'status': "MEAN_REVERTING" if beta < 0.99 else "WEAK_REVERSION"
+        't_stat': t_stat_adf,     # <--- 核心指标：ADF T统计量
+        'beta_se': beta_se,       # 斜率标准误
+        'status': "MEAN_REVERTING"
     }
 
-def calculate_rolling_ou_params(series, window=90, dt=1):
-    """
-    Calculate OU parameters on a rolling window.
-    Returns a DataFrame with index matching the series (dates at end of window).
-    """
-    results = []
-    indices = []
 
-    # Iterate through the series with a sliding window
-    for i in range(window, len(series) + 1):
-        window_series = series.iloc[i-window:i]
-        date = series.index[i-1]
-
-        params = calculate_ou_params(window_series, dt=dt)
-        if params:
-            # Flatten dict for DataFrame
-            row = params.copy()
-            row['date'] = date
-            results.append(row)
-
-    if not results:
-        return pd.DataFrame()
-
-    df_results = pd.DataFrame(results).set_index('date')
-    return df_results
 
 
 # ============================================================================

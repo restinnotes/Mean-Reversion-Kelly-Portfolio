@@ -35,52 +35,79 @@ except ImportError as e:
 # ==========================================
 # 2. Matplotlib Font Configuration (Chinese Support)
 # ==========================================
-
-# ==========================================
-# 2. Matplotlib Font Configuration (Chinese Support)
-# ==========================================
-import matplotlib.font_manager as fm # 确保这里已导入 font_manager
+import matplotlib.font_manager as fm
+import matplotlib.pyplot as plt
 import os
+import sys
 
-# --- 字体文件加载与配置 ---
-# 假设字体文件位于项目根目录下的 /fonts/SimHei.ttf
-# 请根据您上传的文件名和路径进行修改！
-FONT_FILE_NAME = 'SimHei.ttf'  # <--- 请检查您上传的文件名
-FONT_PATH = os.path.join(os.getcwd(), "fonts", FONT_FILE_NAME)
+def configure_chinese_font():
+    """
+    配置中文字体,兼容本地和 Streamlit Cloud 环境
+    """
+    try:
+        # 方案 1: 尝试使用项目自带字体
+        FONT_FILE_NAME = 'SimHei.ttf'
+        FONT_PATH = os.path.join(os.getcwd(), "fonts", FONT_FILE_NAME)
 
-FONT_FAMILY_NAME = 'SimHeiCustom' # 给自定义加载的字体取一个独一无二的名字
+        if os.path.exists(FONT_PATH):
+            print(f"Found custom font at: {FONT_PATH}")
+            fm.fontManager.addfont(FONT_PATH)
+            prop = fm.FontProperties(fname=FONT_PATH)
+            font_name = prop.get_name()
+            plt.rcParams['font.sans-serif'] = [font_name, 'DejaVu Sans']
+            plt.rcParams['axes.unicode_minus'] = False
+            print(f"Successfully loaded custom font: {font_name}")
+            return
 
-try:
-    if os.path.exists(FONT_PATH):
-        # 1. 强制 Matplotlib 注册此字体文件
-        fm.fontManager.addfont(FONT_PATH)
+        # 方案 2: Streamlit Cloud - 使用系统中文字体
+        print("Custom font not found, trying system fonts...")
 
-        # 2. 尝试获取注册后的字体名称（可能与文件名不同）
-        prop = fm.FontProperties(fname=FONT_PATH)
-        FONT_FAMILY_NAME = prop.get_name() # 使用 Matplotlib 识别的真实名称
-
-        # 3. 强制清理缓存（防止旧配置干扰）
-        fm._rebuild()
-
-        # 4. 设置全局默认字体
-        plt.rcParams['font.family'] = 'sans-serif'
-        plt.rcParams['font.sans-serif'] = [
-            FONT_FAMILY_NAME,  # 优先使用我们手动加载的字体
-            'DejaVu Sans',
-            'Arial'
+        # Linux 系统常见中文字体列表
+        chinese_fonts = [
+            'WenQuanYi Micro Hei',    # 文泉驿微米黑
+            'WenQuanYi Zen Hei',      # 文泉驿正黑
+            'Noto Sans CJK SC',       # 思源黑体
+            'Noto Sans CJK TC',
+            'SimHei',                  # 黑体
+            'Microsoft YaHei',         # 微软雅黑
+            'STHeiti',                 # 华文黑体
+            'Arial Unicode MS',
         ]
 
-    else:
-        # 如果字体文件不存在，打印警告并使用系统回退
-        print(f"Warning: Custom font file not found at {FONT_PATH}. Falling back to default.")
+        # 获取系统可用字体
+        available_fonts = set([f.name for f in fm.fontManager.ttflist])
+        print(f"Available fonts on system: {len(available_fonts)}")
+
+        # 查找可用的中文字体
+        found_font = None
+        for font in chinese_fonts:
+            if font in available_fonts:
+                found_font = font
+                print(f"Found system Chinese font: {font}")
+                break
+
+        if found_font:
+            plt.rcParams['font.sans-serif'] = [found_font, 'DejaVu Sans']
+        else:
+            # 方案 3: 安装 Noto Sans (最可靠)
+            print("No Chinese font found, using fallback with Noto Sans SC")
+            plt.rcParams['font.sans-serif'] = [
+                'Noto Sans CJK SC',
+                'DejaVu Sans',
+                'Arial'
+            ]
+
+        plt.rcParams['axes.unicode_minus'] = False
+        print("Font configuration completed")
+
+    except Exception as e:
+        print(f"Font configuration error: {e}")
+        # 最终后备方案
         plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Arial']
+        plt.rcParams['axes.unicode_minus'] = False
 
-    plt.rcParams['axes.unicode_minus'] = False
-
-except Exception as e:
-    print(f"FATAL FONT ERROR: {e}")
-    plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Arial']
-# --- 字体配置结束 ---
+# 执行字体配置
+configure_chinese_font()
 
 # ==========================================
 # 3. HELPER FUNCTIONS FOR MONTE CARLO

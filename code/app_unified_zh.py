@@ -6,6 +6,7 @@ import sys
 import matplotlib.pyplot as plt
 from scipy.stats import norm
 import matplotlib.ticker as mtick
+import matplotlib.font_manager as fm
 
 # ==========================================
 # 1. SETUP: Path & Imports
@@ -34,11 +35,22 @@ except ImportError as e:
 # ==========================================
 # 2. Matplotlib Font Configuration (Chinese Support)
 # ==========================================
-# 使用服务器上可安装的开源中文字体（如 文泉驿正黑）
+# 强制重建 Matplotlib 字体缓存，确保它能发现新安装的字体
+try:
+    # 强制清理缓存（内部函数，Streamlit Cloud 上通常需要）
+    fm._rebuild()
+except Exception as e:
+    # 打印错误，但不中断应用运行
+    print(f"Matplotlib cache rebuild attempt failed: {e}")
+
+# 配置 Matplotlib 使用 Linux 环境中最可靠的开源中文字体（WenQuanYi Zen Hei）
+# 该字体名称对应于您 packages.txt 中安装的 fonts-wqy-zenhei 软件包
 plt.rcParams['font.sans-serif'] = [
-    'WenQuanYi Zen Hei', 'Arial', 'DejaVu Sans', 'Verdana'
+    'WenQuanYi Zen Hei',        # Linux/Streamlit Cloud 的首选
+    'SimHei',                   # Windows 字体作为回退（如果存在）
+    'Arial', 'DejaVu Sans', 'Verdana'
 ]
-plt.rcParams['axes.unicode_minus'] = False
+plt.rcParams['axes.unicode_minus'] = False # 解决负号显示问题
 
 # ==========================================
 # 3. HELPER FUNCTIONS FOR MONTE CARLO

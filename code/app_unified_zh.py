@@ -35,22 +35,34 @@ except ImportError as e:
 # ==========================================
 # 2. Matplotlib Font Configuration (Chinese Support)
 # ==========================================
-# 强制重建 Matplotlib 字体缓存，确保它能发现新安装的字体
-try:
-    # 强制清理缓存（内部函数，Streamlit Cloud 上通常需要）
-    fm._rebuild()
-except Exception as e:
-    # 打印错误，但不中断应用运行
-    print(f"Matplotlib cache rebuild attempt failed: {e}")
 
-# 配置 Matplotlib 使用 Linux 环境中最可靠的开源中文字体（WenQuanYi Zen Hei）
-# 该字体名称对应于您 packages.txt 中安装的 fonts-wqy-zenhei 软件包
-plt.rcParams['font.sans-serif'] = [
-    'WenQuanYi Zen Hei',        # Linux/Streamlit Cloud 的首选
-    'SimHei',                   # Windows 字体作为回退（如果存在）
-    'Arial', 'DejaVu Sans', 'Verdana'
-]
-plt.rcParams['axes.unicode_minus'] = False # 解决负号显示问题
+# 1. 定义 Streamlit Cloud 上文泉驿字体的系统路径
+FONT_PATH = '/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc'
+FONT_NAME = 'WenQuanYi Zen Hei'
+
+# 2. 尝试强制加载字体并清除缓存
+try:
+    if os.path.exists(FONT_PATH):
+        # 强制 Matplotlib 注册此字体
+        fm.fontManager.addfont(FONT_PATH)
+
+        # 强制清理缓存（这是关键步骤）
+        # 注意：在某些 Matplotlib 版本中，这可能会引发警告，但仍需执行。
+        fm._rebuild()
+
+    # 3. 设置全局默认字体
+    plt.rcParams['font.family'] = 'sans-serif'
+    plt.rcParams['font.sans-serif'] = [
+        FONT_NAME,             # 优先使用 WenQuanYi Zen Hei
+        'Arial',
+        'DejaVu Sans',
+        'Verdana'
+    ]
+    plt.rcParams['axes.unicode_minus'] = False # 解决负号显示问题
+except Exception as e:
+    # 如果路径或 addfont 失败，打印错误并回退
+    print(f"Font loading failed: {e}")
+    plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Arial']
 
 # ==========================================
 # 3. HELPER FUNCTIONS FOR MONTE CARLO

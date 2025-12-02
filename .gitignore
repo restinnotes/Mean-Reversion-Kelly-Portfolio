@@ -1,2 +1,7 @@
 code/data_fetch/
 code/temp/
+launchers/
+
+__pycache__/
+*.py[cod]
+*$py.class

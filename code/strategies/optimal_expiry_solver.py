@@ -133,15 +133,15 @@ def find_perfect_expiry(
 if __name__ == "__main__":
     # --- User Input ---
     TICKER = "NVDA"
-    P_CURRENT = 182.14
+    P_CURRENT = 180
     V_TARGET = 225.00
     V_HARD_FLOOR = 130.00   # Strike
     V_FILL_PLAN = 145.00    # Refill price
 
-    LAMBDA = 4.46
-    SIGMA_ASSET = 0.51
-    IV_PRICING = 0.45
-    R_RISKFREE = 0.041
+    LAMBDA = 6.0393
+    SIGMA_ASSET = 0.6082
+    IV_PRICING = 0.51
+    R_RISKFREE = 0.037
 
     # Calculate data
     best, data = find_perfect_expiry(

@@ -56,12 +56,9 @@ def configure_chinese_font():
             plt.rcParams['font.family'] = 'sans-serif'
             plt.rcParams['font.sans-serif'] = [custom_font_name, 'DejaVu Sans', 'Arial']
             plt.rcParams['axes.unicode_minus'] = False
-            # print(f"✅ Successfully loaded custom font: {custom_font_name} from {font_path}")
         except Exception as e:
             st.warning(f"❌ 字体加载失败: {e}。请检查文件是否损坏或路径是否正确。")
     else:
-        # Fallback if file not found, though user indicated the font setup was good in the second version.
-        # Just warning softly.
         st.warning(f"⚠️ 未找到字体文件：{font_path}。虽然不影响计算，但图表中文可能显示为方框。请确认 'fonts/' 目录下有 SimHei.ttf。")
 
 
@@ -140,7 +137,7 @@ def page_diagnosis(ticker, window_days):
     # --- Data Loading uses the consistent project_root ---
     pe_csv_path = os.path.join(project_root, "pe_csv", f"{ticker}_pe.csv")
     if not os.path.exists(pe_csv_path):
-        st.warning(f"警告: 找不到 {ticker}_pe.csv 文件进行滚动分析。请确保数据位于: {os.path.join(os.path.basename(project_root), 'pe_csv/')}")
+        st.warning(f"警告: 找不到 {ticker}_pe.csv 文件进行滚动分析。请确保数据位于: {os.path.basename(project_root)}/pe_csv/")
         return
 
     try:
@@ -333,7 +330,7 @@ def page_diagnosis(ticker, window_days):
 
 
 # --- Page 2: Optimal Expiry Solver ---
-def page_solver(P_CURRENT, V_TARGET, V_HARD_FLOOR, V_FILL_PLAN, LAMBDA, SIGMA_ASSET, IV_PRICING, R_RISKFREE, ticker):
+def page_solver(P_CURRENT, V_TARGET, V_HARD_FLOOR, V_FILL_PLAN, LAMBDA, SIGMA_ASSET, IV_PRICING, R_RISKFREE, ticker, K_FACTOR, BETA):
     st.title("🎯 Step 0.5: 最优期限求解器")
     st.subheader(f"资产: {ticker} | P={P_CURRENT}")
     st.markdown("---")
@@ -342,7 +339,7 @@ def page_solver(P_CURRENT, V_TARGET, V_HARD_FLOOR, V_FILL_PLAN, LAMBDA, SIGMA_AS
     with st.expander("❓ Step 0.5：求解器原理与下一步行动"):
         st.markdown("""
             求解器旨在找到一个**攻守平衡点**：即在满足凯利增长速度要求的同时，预留出在计划补仓价 ($V_{fill}$) 进行 **1:1 补仓的充足现金**。
-            * **进攻曲线 (Offense)**：基于 Kelly 理论，期限越长，波动率惩罚越低，建议仓位越高。
+            * **进攻曲线 (Offense)**：基于 Kelly 理论，期限越长，波动率惩罚越低，建议仓位越高。**注意：进攻曲线使用当前设定的 k 值（例如 0.5）来计算初始仓位。**
             * **防守上限 (Defense)**：基于补仓现金约束，期限越长，期权越贵，可用的初始仓位越低。
             两条曲线的**交点即为最优期限 (Sweet Spot)**。
         """)
@@ -358,19 +355,22 @@ def page_solver(P_CURRENT, V_TARGET, V_HARD_FLOOR, V_FILL_PLAN, LAMBDA, SIGMA_AS
         T = days / 365.0
         c_price, c_delta, c_theta_annual = bs_greek_calculator(P_CURRENT, V_HARD_FLOOR, T, R_RISKFREE, IV_PRICING)
 
+        # Calculates full Kelly (k=1.0) ratio first
         kelly_full = calculate_single_asset_kelly_ratio(
-            P_CURRENT, c_price, c_delta, c_theta_annual, V_TARGET, V_HARD_FLOOR, LAMBDA, SIGMA_ASSET, R_RISKFREE, beta=0.2
+            P_CURRENT, c_price, c_delta, c_theta_annual, V_TARGET, V_HARD_FLOOR, LAMBDA, SIGMA_ASSET, R_RISKFREE, beta=BETA
         )
-        kelly_target = kelly_full * 0.5
+        # Apply the user's k-factor (e.g., 0.5) for the initial target allocation
+        kelly_target = kelly_full * K_FACTOR
 
         c0, _, _ = bs_greek_calculator(P_CURRENT, V_HARD_FLOOR, T, R_RISKFREE, IV_PRICING)
         c_fill, _, _ = bs_greek_calculator(V_FILL_PLAN, V_HARD_FLOOR, T, R_RISKFREE, IV_PRICING)
+        # Cap limit is the available space for the initial position given the fill budget
         cap_limit = c0 / (c0 + c_fill) if c0 + c_fill > 0 else 0.0
 
         results.append({
             "Days": days,
             "Option_Price": c_price,
-            "Kelly_Half": kelly_target,
+            "Kelly_Target": kelly_target,
             "Pilot_Cap": cap_limit,
             "Diff": kelly_target - cap_limit
         })
@@ -397,11 +397,11 @@ def page_solver(P_CURRENT, V_TARGET, V_HARD_FLOOR, V_FILL_PLAN, LAMBDA, SIGMA_AS
     # --- Plotting ---
     st.markdown("---")
     st.markdown("##### 攻守平衡曲线图")
-    st.caption("最优解为进攻曲线 (0.5 * Kelly) 与防守上限 (Pilot Cash Cap) 的交点。")
+    st.caption("最优解为进攻曲线 (Target Kelly) 与防守上限 (Pilot Cash Cap) 的交点。")
 
     fig, ax = plt.subplots(figsize=(10, 6))
 
-    ax.plot(df['Days'], df['Kelly_Half'], label='进攻曲线: 0.5 * Kelly 比例',
+    ax.plot(df['Days'], df['Kelly_Target'], label=f'进攻曲线: K={K_FACTOR:.2f} Kelly 比例',
              color='blue', linewidth=2, linestyle='--')
 
     ax.plot(df['Days'], df['Pilot_Cap'], label='防守上限: 初始补仓容量 (1:1)',
@@ -436,7 +436,7 @@ def page_solver(P_CURRENT, V_TARGET, V_HARD_FLOOR, V_FILL_PLAN, LAMBDA, SIGMA_AS
 
 
 # --- Page 3: Main Calculator (Dashboard) ---
-def page_dashboard(ticker, lambda_val, sigma_val, r_f, k_factor, beta, P, V_target, V_hard, opt_price, delta, theta):
+def page_dashboard(ticker, lambda_val, sigma_val, r_f, k_factor, beta, P, V_target, V_hard, opt_price, delta, theta, V_fill, iv_pricing, days_to_expiry):
     st.title("🌌 Step 1: 凯利 LEAPS 仓位主计算器")
     st.markdown("---")
 
@@ -450,136 +450,306 @@ def page_dashboard(ticker, lambda_val, sigma_val, r_f, k_factor, beta, P, V_targ
     st.markdown("---")
     # ----------------------------
 
-    # --- A. Leverage & Cost ---
-    if opt_price > 0:
-        L = delta * (P / opt_price)
-        theta_annual = (theta / opt_price) * 252.0
+    # --- A. Core Kelly Calculation ---
+    L = delta * (P / opt_price) if opt_price > 0 else 0
+    theta_annual = (theta / opt_price) * 252.0 if opt_price > 0 else 0
 
-        # --- B. Returns ---
-        mu_stock = lambda_val * np.log(V_target / P)
-        mu_leaps = mu_stock * L
-        ERP = mu_leaps - r_f - theta_annual
+    # B. Returns
+    mu_stock = lambda_val * np.log(V_target / P)
+    mu_leaps = mu_stock * L
+    ERP = mu_leaps - r_f - theta_annual
 
-        # --- C. Risk ---
-        sigma_leaps = sigma_val * L
-        variance_leaps = sigma_leaps ** 2
+    # C. Risk
+    sigma_leaps = sigma_val * L
+    variance_leaps = sigma_leaps ** 2
 
-        # --- D. Alpha ---
-        range_len = max(1e-9, V_target - V_hard)
-        dist_from_floor = P - V_hard
-        risk_ratio = max(0.0, min(1.0, dist_from_floor / range_len))
-        alpha = 1.0 - (beta * risk_ratio)
+    # D. Alpha
+    range_len = max(1e-9, V_target - V_hard)
+    dist_from_floor = P - V_hard
+    risk_ratio = max(0.0, min(1.0, dist_from_floor / range_len))
+    alpha = 1.0 - (beta * risk_ratio)
 
-        # --- E. Kelly ---
-        if ERP > 0 and variance_leaps > 0:
-            f_cash = (k_factor * alpha * ERP) / variance_leaps
+    # E. Kelly Cash
+    # Calculate the initial allocation based on user's k_factor (e.g., k=0.5)
+    f_cash = (k_factor * alpha * ERP) / variance_leaps if (ERP > 0 and variance_leaps > 0) else 0.0
+    f_cash = max(0.0, f_cash)
+
+    # --- Display Results ---
+    col_d, col_m = st.columns([1, 2])
+    with col_d:
+        st.subheader("核心结果")
+        if ERP > 0:
+            st.metric(
+                label=f"初始 Kelly 分配 ({k_factor:.2f}K)",
+                value=f"{f_cash:.2%}",
+                delta=f"有效杠杆: {L:.2f}x"
+            )
         else:
-            f_cash = 0.0
+            st.error("净优势为负 (ERP < 0).")
 
-        f_cash = max(0.0, f_cash)
+        st.divider()
 
-        # --- Display Results ---
-        col_d, col_m = st.columns([1, 2])
-        with col_d:
-            st.subheader("核心结果")
-            if ERP > 0:
-                st.metric(
-                    label="Kelly Allocation %",
-                    value=f"{f_cash:.2%}",
-                    delta=f"有效杠杆: {L:.2f}x"
-                )
+        # --- ERP Explanation ---
+        st.write(f"**净优势 (ERP):** {ERP:.2%}")
+        with st.expander("❓ 净优势 (ERP) 解读"):
+            st.markdown(r"""
+                **ERP (Excess Return Premium)** 是指在扣除所有成本后的**预期年化超额收益率**。
+
+                $$\text{ERP}_i = (\mu_{\text{stock}, i} \cdot L_i) - r_f - \theta_{\text{annual}, i}$$
+
+                * **进攻端:** 均值回归预期收益 $\times$ 杠杆 $L$
+                * **防守端:** 减去资金成本 $r_f$ 和时间损耗 $\theta_{\text{annual}}$
+
+                **如果 ERP > 0，则表明这是一笔具有正期望值的交易。**
+            """)
+
+        # --- Alpha Explanation ---
+        st.write(f"**信心系数 (Alpha):** {alpha:.3f}")
+        with st.expander("❓ 信心系数 (Alpha) 解读"):
+            st.markdown(r"""
+                **Alpha (信心折扣系数)** 是一个动态调节因子，用于根据当前股价**距离硬底的远近**来调整仓位。
+
+                $$\alpha_i = 1 - \beta \cdot \left( \frac{P_i - P_{\text{floor}, i}}{V_i - P_{\text{floor}, i}} \right)$$
+
+                * **当股价接近硬底 ($V_{\text{hard}}$) 时:** $\alpha \to 1.0$，信心最高，推荐分配全部 Kelly 仓位。
+                * **当股价接近目标价 ($V_{\text{target}}$) 时:** $\alpha \to (1-\beta)$，折扣生效，Kelly 仓位被缩减，以保留利润。
+            """)
+
+        st.write(f"**LEAPS 年化波动率:** {sigma_leaps:.2%}")
+
+    with col_m:
+        st.subheader("情景分析 (固定杠杆)")
+        st.caption("当价格跌向硬底时，仓位如何变化。")
+
+        prices = np.linspace(V_hard, P, 50)
+        allocations = []
+
+        for p_sim in prices:
+            dist = p_sim - V_hard
+            rr = max(0.0, min(1.0, dist / range_len))
+            a_sim = 1.0 - (beta * rr)
+            mu_s = lambda_val * np.log(V_target / p_sim)
+            mu_l = mu_s * L
+            # Note: ERP here uses the current fixed L and theta_annual
+            erp_sim = mu_l - r_f - theta_annual
+            # We use k_factor for the chart to show current strategy's response
+            if erp_sim > 0:
+                val = (k_factor * a_sim * erp_sim) / variance_leaps
             else:
-                st.error("净优势为负 (ERP < 0).")
+                val = 0
+            allocations.append(max(0, val))
 
-            st.divider()
+        chart_data = pd.DataFrame({
+            "股价": prices,
+            "建议分配比例": allocations
+        })
+        st.line_chart(chart_data, x="股价", y="建议分配比例", color="#FF4B4B")
+        st.caption(f"曲线变化由 Alpha 信心系数 (Beta={beta:.2f}) 驱动，确保越接近硬底 ($V_{{hard}}$) 信心越高。")
 
-            # --- ERP Explanation ---
-            st.write(f"**净优势 (ERP):** {ERP:.2%}")
-            with st.expander("❓ 净优势 (ERP) 解读"):
-                st.markdown(r"""
-                    **ERP (Excess Return Premium)** 是指在扣除所有成本后的**预期年化超额收益率**。
+    st.markdown("---")
 
-                    $$ \text{ERP}_i = (\mu_{\text{stock}, i} \cdot L_i) - r_f - \theta_{\text{annual}, i} $$
+    # --- F. Dynamic K-Factor Strategy Visualizer (NEW) ---
+    st.subheader("💡 动态 K 值策略推演 (Dynamic K-Factor Matrix)")
+    st.info(f"此图展示了当股价从当前 ${P} 下跌至补仓价 ${V_fill} 时，若设定不同的【最终目标 K 值】，总仓位将如何变化。")
+    st.caption(f"假设：K 值随股价下跌线性递增。起点为当前设定的 K={k_factor}，终点为图例中的目标 K。")
 
-                    * **进攻端:** 均值回归预期收益 $\times$ 杠杆 $L$
-                    * **防守端:** 减去资金成本 $r_f$ 和时间损耗 $\theta_{\text{annual}}$
+    if P <= V_fill:
+        st.warning(f"当前价格 ${P} 已低于或等于补仓价 ${V_fill}。建议直接采用目标 K 值进行配置，无需动态推演。")
+    else:
+        # Simulation Parameters
+        sim_steps = 30
+        sim_prices = np.linspace(P, V_fill, sim_steps)
 
-                    **如果 ERP > 0，则表明这是一笔具有正期望值的交易。**
-                """)
+        # Generate Target Ks: Start from current k_factor, step up to 1.0
+        # Example: if k=0.5, we want [0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+        # We use a small epsilon to ensure 1.0 is included if step aligns
+        step = 0.1
+        if k_factor >= 1.0:
+            target_ks = [1.0]
+        else:
+            # Create range
+            targets = np.arange(k_factor, 1.0 + 1e-9, step)
+            # Ensure 1.0 is strictly in the list if not already (due to float precision)
+            if abs(targets[-1] - 1.0) > 1e-5:
+                targets = np.append(targets, 1.0)
+            target_ks = targets
 
-            # --- Alpha Explanation ---
-            st.write(f"**信心系数 (Alpha):** {alpha:.3f}")
-            with st.expander("❓ 信心系数 (Alpha) 解读"):
-                st.markdown(r"""
-                    **Alpha (信心折扣系数)** 是一个动态调节因子，用于根据当前股价**距离硬底的远近**来调整仓位。
+        # Prepare Plot
+        fig_sim, ax_sim = plt.subplots(figsize=(10, 6))
 
-                    $$ \alpha_i = 1 - \beta \cdot \left( \frac{P_i - P_{\text{floor}, i}}{V_i - P_{\text{floor}, i}} \right) $$
+        # Color map - distinct colors
+        colors = plt.cm.plasma(np.linspace(0, 0.9, len(target_ks)))
 
-                    * **当股价接近硬底 ($V_{\text{hard}}$) 时:** $\alpha \to 1.0$，信心最高，推荐分配全部 Kelly 仓位。
-                    * **当股价接近目标价 ($V_{\text{target}}$) 时:** $\alpha \to (1-\beta)$，折扣生效，Kelly 仓位被缩减，以保留利润。
-                """)
-
-            st.write(f"**LEAPS 年化波动率:** {sigma_leaps:.2%}")
-
-        with col_m:
-            st.subheader("情景分析 (固定杠杆)")
-            st.caption("当价格跌向硬底时，仓位如何变化。")
-
-            prices = np.linspace(V_hard, P, 50)
+        for idx, target_k in enumerate(target_ks):
             allocations = []
 
-            for p_sim in prices:
-                dist = p_sim - V_hard
-                rr = max(0.0, min(1.0, dist / range_len))
-                a_sim = 1.0 - (beta * rr)
-                mu_s = lambda_val * np.log(V_target / p_sim)
-                mu_l = mu_s * L
-                erp_sim = mu_l - r_f - theta_annual
-                if erp_sim > 0:
-                    val = (k_factor * a_sim * erp_sim) / variance_leaps
-                else:
-                    val = 0
-                allocations.append(max(0, val))
+            # Label generation
+            if abs(target_k - k_factor) < 0.01:
+                label_str = f"保持恒定 K={target_k:.1f}"
+            else:
+                label_str = f"目标 K={target_k:.1f}"
 
-            chart_data = pd.DataFrame({
-                "股价": prices,
-                "建议分配比例": allocations
+            hit_100_idx = -1
+
+            for i, p_sim in enumerate(sim_prices):
+                # 1. Linear Interpolation of K
+                # Progress: 0.0 at Start(P), 1.0 at End(V_fill)
+                progress = (P - p_sim) / (P - V_fill)
+                current_sim_k = k_factor + (target_k - k_factor) * progress
+
+                # 2. Recalculate Option/Greeks
+                T_sim = days_to_expiry / 365.0
+                c_sim, delta_sim, theta_sim_ann = bs_greek_calculator(p_sim, V_hard, T_sim, r_f, iv_pricing)
+
+                val = 0.0
+                if c_sim > 0:
+                    theta_yield_sim = abs(theta_sim_ann) / c_sim
+                    L_sim = delta_sim * (p_sim / c_sim)
+
+                    mu_stock_sim = lambda_val * np.log(V_target / p_sim)
+                    mu_leaps_sim = mu_stock_sim * L_sim
+                    ERP_sim = mu_leaps_sim - r_f - theta_yield_sim
+
+                    sigma_leaps_sim = sigma_val * L_sim
+                    var_leaps_sim = sigma_leaps_sim ** 2
+
+                    dist_sim = p_sim - V_hard
+                    risk_ratio_sim = max(0.0, min(1.0, dist_sim / range_len))
+                    alpha_sim = 1.0 - (beta * risk_ratio_sim)
+
+                    if ERP_sim > 0 and var_leaps_sim > 0:
+                        val = (current_sim_k * alpha_sim * ERP_sim) / var_leaps_sim
+
+                val = max(0.0, val)
+                allocations.append(val)
+
+                # Track when it hits 100%
+                if val >= 1.0 and hit_100_idx == -1:
+                    hit_100_idx = i
+
+            # Plot Logic
+            # If hits 100%, we can truncate or just let it go high but clip visually
+            # The prompt asks: "什么时候会加满（占到100%的话就停止循环进入下一个）"
+            # Visually showing it capping at 100% is often better than stopping the line
+
+            # Clip values for plotting but keep data integrity?
+            # Let's plot actual values but limit Y axis to e.g. 1.2
+
+            ax_sim.plot(sim_prices, allocations, label=label_str, color=colors[idx], linewidth=2)
+
+
+
+        # Formatting
+        ax_sim.set_title(f"不同 K 值递增策略下的仓位路径 (${P} -> ${V_fill})", fontsize=12)
+        ax_sim.set_xlabel("股价 ($)", fontsize=10)
+        ax_sim.set_ylabel("建议总仓位 % (f)", fontsize=10)
+
+        # X Axis: Invert to show price dropping from Left to Right?
+        # Standard financial charts usually have time/lower prices depending on context.
+        # User wants "Drop". High -> Low.
+        ax_sim.invert_xaxis()
+
+        ax_sim.set_ylim(0, 1.5) # Allow seeing a bit above 100%
+        ax_sim.yaxis.set_major_formatter(mtick.PercentFormatter(1.0))
+
+        # 100% Line
+        ax_sim.axhline(1.0, color='red', linestyle='--', linewidth=1.5, alpha=0.7, label="满仓线 (100%)")
+
+        ax_sim.legend(loc='upper right', fontsize=8, framealpha=0.9)
+        ax_sim.grid(True, alpha=0.3)
+
+        st.pyplot(fig_sim)
+        plt.close(fig_sim)
+
+        st.markdown(f"""
+        **图表说明：**
+        * **X轴**：股价从当前价格逐渐下跌至补仓价。
+        * **Y轴**：凯利公式计算出的建议总仓位。
+        * **彩色线条**：代表不同的策略。例如 "目标 K=1.0" 意味着随着股价下跌，K 值从当前的 {k_factor} 线性增加到 1.0。
+        * **交点/红线**：当线条触及 100% 红线时，意味着该策略下建议满仓，后续应停止加仓或仅维持仓位。
+        """)
+
+    st.markdown("---")
+
+    # --- G. Stress Test (NEW FEATURE) ---
+    st.subheader("⚠️ 压力测试 (Stress Test) - 账户净值模拟")
+    st.caption(f"基于当前建议仓位 ({f_cash:.2%}) 的次日盈亏模拟")
+
+    with st.expander("📊 点击展开：如果明天发生暴跌，我的账户将承受？", expanded=True):
+
+        # 1. Get Daily Sigma for Stock
+        sigma_daily_stock = sigma_val / np.sqrt(252)
+
+        # 2. Define Scenarios (Drop in Stock Price)
+        scenarios = [
+            ("日常波动 (1σ)", -1.0 * sigma_daily_stock),
+            ("周度回调 (2σ)", -2.0 * sigma_daily_stock),
+            ("极端黑天鹅 (3σ)", -3.0 * sigma_daily_stock),
+            ("熔断级崩盘 (-20%)", -0.20)
+        ]
+
+        risk_table = []
+
+        # We use Delta Approximation for simplicity: LEAPS Drop % ≈ Leverage * Stock Drop %
+        # Assume a nominal account size of $100,000 for dollar loss display (optional but illustrative)
+        NOMINAL_ACCOUNT_VALUE = 100000.0
+
+        for name, stock_drop in scenarios:
+            if L == 0:
+                leaps_drop_pct = 0.0
+            else:
+                # Use effective leverage L for approximation
+                leaps_drop_pct = stock_drop * L
+
+            # Account Impact = Kelly_Pct * Leaps_Drop_Pct
+            account_impact_pct = f_cash * leaps_drop_pct
+            account_loss_usd = account_impact_pct * NOMINAL_ACCOUNT_VALUE
+
+            risk_table.append({
+                "情景": name,
+                "标的跌幅": f"{stock_drop:.2%}",
+                "LEAPS 预估跌幅": f"{leaps_drop_pct:.2%}",
+                "账户总净值回撤": f"{account_impact_pct:.2%}",
+                "预估亏损 (10万账户)": f"${account_loss_usd:,.0f}" if f_cash > 0 else "$0",
             })
-            st.line_chart(chart_data, x="股价", y="建议分配比例", color="#FF4B4B")
-            st.caption(f"曲线变化由 Alpha 信心系数 (Beta={beta:.2f}) 驱动，确保越接近硬底 ($V_{{hard}}$) 信心越高。")
 
-        # --- Save to Portfolio Feature ---
-        if opt_price > 0 and ERP > 0:
-            st.markdown("---")
-            st.subheader("💾 保存到组合")
+        risk_df = pd.DataFrame(risk_table)
+        st.table(risk_df)
+        st.caption("*注：此处使用有效杠杆 (L) 进行线性估算，实际期权在暴跌中的跌幅可能因 Gamma/Vega 效应有所不同。仅供风控参考。如果 $3\sigma$ 亏损额让你感到恐慌，请在侧边栏调低 $k$ 值。")
 
-            if st.button("➕ 保存当前配置到组合", type="primary"):
-                asset_record = {
-                    'Ticker': ticker,
-                    'Raw_Kelly_Pct': f_cash,
-                    'ERP': ERP,
-                    'L': L,
-                    'k_factor': k_factor,
-                    'Alpha': alpha,
-                    'P': P,
-                    'V_target': V_target,
-                    'V_hard': V_hard,
-                    'Sigma_Leaps': sigma_leaps
-                }
 
-                existing_tickers = [item['Ticker'] for item in st.session_state.get('portfolio_data', [])]
+    # --- Save to Portfolio Feature ---
+    if opt_price > 0 and ERP > 0:
+        st.markdown("---")
+        st.subheader("💾 保存到组合")
 
-                if ticker in existing_tickers:
-                    idx = existing_tickers.index(ticker)
-                    st.session_state['portfolio_data'][idx] = asset_record
-                    st.success(f"✅ 已更新 {ticker} 的组合数据")
-                else:
-                    if 'portfolio_data' not in st.session_state:
-                           st.session_state['portfolio_data'] = []
-                    st.session_state['portfolio_data'].append(asset_record)
-                    st.success(f"✅ 已将 {ticker} 添加到组合")
+        if st.button("➕ 保存当前配置到组合", type="primary"):
+            asset_record = {
+                'Ticker': ticker,
+                'Raw_Kelly_Pct': f_cash,
+                'ERP': ERP,
+                'L': L,
+                'k_factor': k_factor,
+                'Alpha': alpha,
+                'P': P,
+                'V_target': V_target,
+                'V_hard': V_hard,
+                'Sigma_Leaps': sigma_leaps
+            }
 
-                st.info(f"当前组合共有 {len(st.session_state.get('portfolio_data', []))} 个标的")
+            existing_tickers = [item['Ticker'] for item in st.session_state.get('portfolio_data', [])]
+
+            if ticker in existing_tickers:
+                idx = existing_tickers.index(ticker)
+                st.session_state['portfolio_data'][idx] = asset_record
+                st.success(f"✅ 已更新 {ticker} 的组合数据")
+            else:
+                if 'portfolio_data' not in st.session_state:
+                       st.session_state['portfolio_data'] = []
+                st.session_state['portfolio_data'].append(asset_record)
+                st.success(f"✅ 已将 {ticker} 添加到组合")
+
+            st.info(f"当前组合共有 {len(st.session_state.get('portfolio_data', []))} 个标的")
 
 
 # --- Page for Multi-Asset Normalization ---
@@ -595,7 +765,7 @@ def page_multi_asset_normalization(max_leverage_cap):
             **1. 高相关性资产 (例如：同板块股票或指数)**
             * **原则:** 当资产相关性高时，风险分散效果差。建议将原始 Kelly 值进行**内部加权平均**，而非简单相加，以此平均值作为 $C_{max}$ 或略高的上限。
             * **案例:** 如果资产A (Kelly $65\%$, 信心 $2$) 和资产B (Kelly $45\%$, 信心 $1$)，您可以考虑将最终上限 $C_{max}$ 设置为他们的**信心加权平均**：
-                $$ C_{max} \approx \frac{65\% \times 2 + 45\% \times 1}{2 + 1} \approx 58.33\% $$
+                $$C_{max} \approx \frac{65\% \times 2 + 45\% \times 1}{2 + 1} \approx 58.33\%$$
             * **操作:** 将计算出的加权平均值（例如 $0.58$）作为 $C_{max}$ 阈值输入到左侧边栏的滑块中。
 
             **2. 低相关性资产 (例如：跨市场指数)**
@@ -677,7 +847,8 @@ default_vals = {
     'V_target': 225.00, 'V_hard': 130.00, 'V_fill': 145.00,
     'iv_pricing': 0.5100, 'opt_price': 61.60, 'delta': 0.8446,
     'theta': 0.0425, 'ticker': "NVDA", 'lambda': 6.0393,
-    'sigma': 0.6082, 'portfolio_data': [], 'window_days': 90
+    'sigma': 0.6082, 'portfolio_data': [], 'window_days': 90,
+    'days_to_expiry': 365 # Default 1 year
 }
 
 for key, default_val in default_vals.items():
@@ -728,8 +899,10 @@ with st.sidebar:
             st.error("依赖模块 (lambda_tools.py / sigma_tools.py) 未导入，无法获取历史数据。")
 
     st.divider()
-    lambda_val = st.number_input("年化 Lambda (λ)", value=st.session_state['lambda'], key='lambda_global', format="%.4f")
-    sigma_val = st.number_input("年化 Sigma (σ)", value=st.session_state['sigma'], key='sigma_global', format="%.4f")
+    lambda_val = st.number_input("年化 Lambda (λ)", value=st.session_state['lambda'], key='lambda_global', format="%.4f",
+                               help="【均值回归动力】数值越大，修复越快。若图表显示 Lambda 处于历史极高位(>8.0)，建议手动调低至 5.0 左右以防噪音。")
+    sigma_val = st.number_input("年化 Sigma (σ)", value=st.session_state['sigma'], key='sigma_global', format="%.4f",
+                              help="【保守波动率】通常取历史 85% 分位数。用于计算凯利公式的分母(风险)。")
 
     st.header("2. 策略与市场参数 (动态)")
 
@@ -748,6 +921,7 @@ with st.sidebar:
     current_theta = st.session_state.theta
     current_window_days = st.session_state.window_days
     current_max_cap = st.session_state.get('c_max_slider', 1.0)
+    current_days_to_expiry = st.session_state.get('days_to_expiry', 365)
 
 
     if page == "Step 0: 市场诊断":
@@ -759,15 +933,28 @@ with st.sidebar:
         if page == "Step 1: 主仓位计算器":
             st.subheader("2.1 策略约束")
             current_r_f = st.number_input("无风险利率 (r_f)", value=st.session_state.r_f, key='r_f_dash', format="%.3f")
-            current_k_factor = st.slider("凯利分数 (k)", 0.1, 1.0, st.session_state.k_factor, 0.05, key='k_dash')
-            current_beta = st.slider("估值折扣系数 (beta)", 0.0, 1.0, st.session_state.beta, 0.05, key='beta_dash')
+            current_k_factor = st.slider("凯利分数 (k)", 0.1, 1.0, st.session_state.k_factor, 0.05, key='k_dash',
+                                         help="【激进程度】0.5 = 推荐标准 (半凯利)，最大化长期几何增长率。1.0 = 满凯利，仅建议在极度低估时用于回补。")
+            current_beta = st.slider("估值折扣系数 (beta)", 0.0, 1.0, st.session_state.beta, 0.05, key='beta_dash',
+                                     help="【止盈速率/信心衰减】0.2 = 推荐。股价接近目标价时，Alpha 保留 80% 权重。1.0 = 到达目标价即清仓。")
 
             st.subheader("2.2 市场与合约参数")
             current_P = st.number_input("当前股价 P ($)", value=st.session_state.P, key='P_dash', format="%.2f")
-            current_V_target = st.number_input("目标价 V ($)", value=st.session_state.V_target, key='V_target_dash', format="%.2f")
-            current_V_hard = st.number_input("硬底 V_hard ($)", value=st.session_state.V_hard, key='V_hard_dash', format="%.2f")
+            current_V_target = st.number_input("目标价 V ($)", value=st.session_state.V_target, key='V_target_dash', format="%.2f",
+                                               help="【公允价值】你认为标的最终应值多少钱？影响预期收益(Drift)。")
+            current_V_hard = st.number_input("硬底 V_hard ($)", value=st.session_state.V_hard, key='V_hard_dash', format="%.2f",
+                                             help="【止损锚点】极端悲观下绝对不会跌破的价格。建议买入 Strike 接近此价格的期权，物理锁死尾部风险。")
+
+            # Added V_fill for dynamic calculation
+            current_V_fill = st.number_input("计划补仓价 V_fill ($)", value=st.session_state.V_fill, key='V_fill_dash', format="%.2f",
+                                            help="【满仓线】当股价跌至此价格时，总仓位将提升至 1.0K 的理论最大值。")
+
 
             st.divider()
+            # Added Days to Expiry for BS calc
+            current_days_to_expiry = st.number_input("距离到期日 (Days)", value=st.session_state.days_to_expiry, key='dte_dash', step=1)
+            current_iv_pricing = st.number_input("期权定价 IV", value=st.session_state.iv_pricing, key='iv_dash', format="%.4f", help="用于在动态推演中重新计算期权价格。")
+
             current_opt_price = st.number_input("LEAPS Price ($)", value=st.session_state.opt_price, key='opt_price_dash', format="%.2f")
             current_delta = st.number_input("Delta", value=st.session_state.delta, key='delta_dash', format="%.4f")
             current_theta = st.number_input("Daily Theta (Abs)", value=st.session_state.theta, key='theta_dash', format="%.4f")
@@ -778,13 +965,23 @@ with st.sidebar:
             st.session_state.P = current_P
             st.session_state.V_target = current_V_target
             st.session_state.V_hard = current_V_hard
+            st.session_state.V_fill = current_V_fill # Store V_fill
             st.session_state.opt_price = current_opt_price
             st.session_state.delta = current_delta
             st.session_state.theta = current_theta
+            st.session_state.days_to_expiry = current_days_to_expiry # Store DTE
+            st.session_state.iv_pricing = current_iv_pricing # Store IV
 
         elif page == "Step 0.5: 最优期限求解":
             st.subheader("2.1 策略约束")
             current_r_f = st.number_input("无风险利率 (r_f)", value=st.session_state.r_f, key='r_f_solver', format="%.3f")
+
+            # --- ADDED K and Beta Inputs to Solver Sidebar ---
+            current_k_factor = st.slider("凯利分数 (k)", 0.1, 1.0, st.session_state.k_factor, 0.05, key='k_solver_factor',
+                                         help="【激进程度】影响进攻曲线 (Kelly) 的起始位置。")
+            current_beta = st.slider("估值折扣系数 (beta)", 0.0, 1.0, st.session_state.beta, 0.05, key='beta_solver',
+                                     help="【信心衰减】影响 Kelly 计算中 Alpha 的折扣率。")
+            # --- END ADDED ---
 
             st.subheader("2.2 市场与定价参数")
             current_P = st.number_input("当前股价 P ($)", value=st.session_state.P, key='P_solver', format="%.2f")
@@ -794,6 +991,8 @@ with st.sidebar:
             current_iv_pricing = st.number_input("期权定价波动率 (IV)", value=st.session_state.iv_pricing, key='iv_pricing_solver', format="%.4f")
 
             st.session_state.r_f = current_r_f
+            st.session_state.k_factor = current_k_factor # Update k_factor and beta in session state for consistency
+            st.session_state.beta = current_beta
             st.session_state.P = current_P
             st.session_state.V_target = current_V_target
             st.session_state.V_hard = current_V_hard
@@ -816,7 +1015,7 @@ elif page == "Step 0.5: 最优期限求解":
     elif current_lambda is None or current_sigma is None:
         st.error("请先在侧边栏获取 Lambda/Sigma 统计数据。")
     else:
-        page_solver(current_P, current_V_target, current_V_hard, current_V_fill, current_lambda, current_sigma, current_iv_pricing, current_r_f, ticker)
+        page_solver(current_P, current_V_target, current_V_hard, current_V_fill, current_lambda, current_sigma, current_iv_pricing, current_r_f, ticker, current_k_factor, current_beta)
 
 elif page == "Step 1: 主仓位计算器":
     if current_lambda is None or current_sigma is None:
@@ -824,7 +1023,8 @@ elif page == "Step 1: 主仓位计算器":
     elif current_opt_price <= 0 or current_delta <= 0:
         st.warning("请在侧边栏输入有效的期权合约数据。")
     else:
-        page_dashboard(ticker, current_lambda, current_sigma, current_r_f, current_k_factor, current_beta, current_P, current_V_target, current_V_hard, current_opt_price, current_delta, current_theta)
+        # Pass new arguments to page_dashboard
+        page_dashboard(ticker, current_lambda, current_sigma, current_r_f, current_k_factor, current_beta, current_P, current_V_target, current_V_hard, current_opt_price, current_delta, current_theta, current_V_fill, current_iv_pricing, current_days_to_expiry)
 
 elif page == "Step 2: 多标的组合管理":
     max_leverage_cap = st.session_state.get('c_max_slider', 1.0)

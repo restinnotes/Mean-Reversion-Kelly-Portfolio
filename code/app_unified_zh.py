@@ -7,7 +7,6 @@ import matplotlib.pyplot as plt
 from scipy.stats import norm
 import matplotlib.ticker as mtick
 import matplotlib.font_manager as fm
-# import requests  # Removed request module as per SimHei manual configuration
 
 # ==========================================
 # 1. SETUP: Path & Imports
@@ -57,11 +56,13 @@ def configure_chinese_font():
             plt.rcParams['font.family'] = 'sans-serif'
             plt.rcParams['font.sans-serif'] = [custom_font_name, 'DejaVu Sans', 'Arial']
             plt.rcParams['axes.unicode_minus'] = False
-            print(f"✅ Successfully loaded custom font: {custom_font_name} from {font_path}")
+            # print(f"✅ Successfully loaded custom font: {custom_font_name} from {font_path}")
         except Exception as e:
             st.warning(f"❌ 字体加载失败: {e}。请检查文件是否损坏或路径是否正确。")
     else:
-        st.warning(f"⚠️ 未找到字体文件：{font_path}。请确认已将 SimHei.ttf 上传到项目的 'fonts/' 目录下。")
+        # Fallback if file not found, though user indicated the font setup was good in the second version.
+        # Just warning softly.
+        st.warning(f"⚠️ 未找到字体文件：{font_path}。虽然不影响计算，但图表中文可能显示为方框。请确认 'fonts/' 目录下有 SimHei.ttf。")
 
 
 # 在脚本启动时立即执行配置
@@ -647,7 +648,8 @@ def page_multi_asset_normalization(max_leverage_cap):
     }, inplace=True)
 
     df_display['原始 Kelly %'] = df_display['原始 Kelly %'].apply(lambda x: f"{x:.2%}")
-    df_display['最终仓位 %'] = df_display['Final_Pct'].apply(lambda x: '**{}**'.format(f'{x:.2%}'))
+    # FIX: Use the NEW column name '最终仓位 %' because 'Final_Pct' was renamed in the previous step
+    df_display['最终仓位 %'] = df_display['最终仓位 %'].apply(lambda x: '**{}**'.format(f'{x:.2%}'))
     df_display['净优势 (ERP)'] = df_display['净优势 (ERP)'].apply(lambda x: f"{x:.2%}")
     df_display['杠杆 (L)'] = df_display['杠杆 (L)'].apply(lambda x: f"{x:.2f}x")
     df_display['LEAPS波动率'] = df_display['LEAPS波动率'].apply(lambda x: f"{x:.2%}")

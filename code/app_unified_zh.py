@@ -45,121 +45,59 @@ import streamlit as st
 if 'font_configured' not in st.session_state:
     st.session_state.font_configured = False
 
+import os
+import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
+import streamlit as st
+
 def configure_chinese_font():
     """
-    配置中文字体,兼容本地和 Streamlit Cloud 环境
-    使用 session_state 确保只配置一次
+    强制加载项目自带的中文字体，解决 Streamlit Cloud 中文乱码问题
     """
-    # 如果已经配置过,直接返回
-    if st.session_state.font_configured:
-        return
+    # 1. 确定字体文件的绝对路径
+    # 这里的路径是相对于项目根目录的，根据你的文件结构进行调整
+    # 假设 fonts 文件夹在项目根目录，而此脚本在 code/ 目录下，需要回退一级
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(current_dir) # 回退到 project_root
 
-    try:
-        # 方案 1: 尝试使用项目自带字体
-        FONT_FILE_NAME = 'SimHei.ttf'
-        FONT_PATH = os.path.join(os.getcwd(), "fonts", FONT_FILE_NAME)
+    # 这里修改为你上传的具体文件名，比如 'SimHei.ttf' 或 'NotoSansSC-Regular.ttf'
+    font_file_name = 'simsunb.ttf'
+    font_path = os.path.join(project_root, "fonts", font_file_name)
 
-        if os.path.exists(FONT_PATH):
-            print(f"✅ Found custom font at: {FONT_PATH}")
-            fm.fontManager.addfont(FONT_PATH)
-            prop = fm.FontProperties(fname=FONT_PATH)
-            font_name = prop.get_name()
+    # 2. 检查文件是否存在
+    if not os.path.exists(font_path):
+        # 如果找不到，尝试一下相对路径（兼容性处理）
+        font_path = os.path.join("fonts", font_file_name)
 
-            # 关键：使用 insert(0) 确保优先级
-            if font_name not in plt.rcParams['font.sans-serif']:
-                plt.rcParams['font.sans-serif'].insert(0, font_name)
+    if os.path.exists(font_path):
+        try:
+            # 3. 核心：使用 addfont 动态添加字体
+            fm.fontManager.addfont(font_path)
 
-            plt.rcParams['axes.unicode_minus'] = False
-            print(f"✅ Successfully loaded custom font: {font_name}")
-            st.session_state.font_configured = True
-            return
+            # 4. 获取该字体的内部名称
+            prop = fm.FontProperties(fname=font_path)
+            custom_font_name = prop.get_name()
 
-        # 方案 2: Streamlit Cloud - 使用系统中文字体
-        print("⚠️ Custom font not found, trying system fonts...")
+            # 5. 设置为 Matplotlib 的默认字体
+            # 将自定义字体放在列表第一位，拥有最高优先级
+            plt.rcParams['font.family'] = 'sans-serif'
+            plt.rcParams['font.sans-serif'] = [custom_font_name, 'DejaVu Sans', 'Arial']
+            plt.rcParams['axes.unicode_minus'] = False # 解决负号显示为方块的问题
 
-        # Linux 系统常见中文字体列表(按优先级排序)
-        chinese_fonts = [
-            'Noto Sans CJK SC',       # 思源黑体(推荐)
-            'Noto Sans CJK TC',
-            'WenQuanYi Micro Hei',    # 文泉驿微米黑
-            'WenQuanYi Zen Hei',      # 文泉驿正黑
-            'Droid Sans Fallback',    # Android 字体
-            'AR PL UMing CN',
-            'SimHei',                 # 黑体
-            'Microsoft YaHei',        # 微软雅黑
-        ]
-
-        # 获取系统可用字体
-        available_fonts = set([f.name for f in fm.fontManager.ttflist])
-
-        # 查找第一个可用的中文字体
-        found_font = None
-        for font in chinese_fonts:
-            if font in available_fonts:
-                found_font = font
-                print(f"✅ Found system Chinese font: {font}")
-                break
-
-        if found_font:
-            # 清空现有配置,设置新字体
-            plt.rcParams['font.sans-serif'] = [found_font, 'DejaVu Sans', 'Arial']
-        else:
-            # 方案 3: 强制使用 Noto Sans(即使未检测到)
-            print("⚠️ No Chinese font detected, forcing Noto Sans SC")
-            plt.rcParams['font.sans-serif'] = [
-                'Noto Sans CJK SC',
-                'DejaVu Sans',
-                'Arial'
-            ]
-
+            print(f"✅ 成功加载自定义字体: {custom_font_name} from {font_path}")
+            return True
+        except Exception as e:
+            st.error(f"加载字体出错: {e}")
+            return False
+    else:
+        # 如果文件没上传成功，打印警告，并尝试使用备选方案（依赖 packages.txt）
+        print(f"⚠️ 未找到字体文件: {font_path}。尝试使用系统预装字体...")
+        plt.rcParams['font.sans-serif'] = ['WenQuanYi Zen Hei', 'Noto Sans CJK SC', 'SimHei', 'Arial']
         plt.rcParams['axes.unicode_minus'] = False
+        return False
 
-        # 强制刷新字体缓存(关键步骤)
-        fm._rebuild()
-
-        print(f"✅ Font configuration completed: {plt.rcParams['font.sans-serif']}")
-        st.session_state.font_configured = True
-
-    except Exception as e:
-        print(f"❌ Font configuration error: {e}")
-        # 最终后备方案
-        plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Arial']
-        plt.rcParams['axes.unicode_minus'] = False
-        st.session_state.font_configured = True
-
-# 🔥 执行字体配置(只会运行一次)
+# 在脚本最开始调用
 configure_chinese_font()
-
-
-# ==========================================
-# 额外优化：每次创建图表时都确认字体设置
-# ==========================================
-def ensure_chinese_font():
-    """
-    在每个绘图函数开始时调用,确保字体设置仍然有效
-    """
-    current_fonts = plt.rcParams['font.sans-serif']
-
-    # 检查是否有中文字体
-    has_chinese = any(
-        font in str(current_fonts)
-        for font in ['Noto', 'WenQuan', 'SimHei', 'YaHei', 'Hei', 'CJK']
-    )
-
-    if not has_chinese:
-        # 如果字体被重置,重新配置
-        print("⚠️ Font reset detected, reconfiguring...")
-        st.session_state.font_configured = False
-        configure_chinese_font()
-
-
-# ==========================================
-# 使用示例：在每个绘图函数开始时调用
-# ==========================================
-# 在你原来的 page_diagnosis 等函数中,绘图前加上:
-# ensure_chinese_font()
-# fig, ax = plt.subplots(...)
-# ...
 
 # ==========================================
 # 3. HELPER FUNCTIONS FOR MONTE CARLO

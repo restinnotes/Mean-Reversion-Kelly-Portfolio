@@ -37,45 +37,70 @@ except ImportError as e:
 # ==========================================
 def configure_chinese_font():
     """
-    Force load project-specific Chinese font to resolve encoding issues in Streamlit Cloud.
-    Sets global matplotlib parameters.
+    配置中文字体。
+    优先寻找系统自带的 'WenQuanYi Zen Hei' (Streamlit Cloud 常用)，
+    其次尝试加载项目目录下的自定义字体。
     """
-    # 1. Determine absolute path to font
+    # 1. 优先列表：Streamlit Cloud / Linux 常用中文字体
+    # 'WenQuanYi Zen Hei' 是最稳妥的选择，'SimSun-ExtB' 往往缺字，所以排在后面或仅作为备选
+    preferred_fonts = ['WenQuanYi Zen Hei', 'Noto Sans CJK SC', 'SimHei', 'Microsoft YaHei', 'SimSun', 'Arial Unicode MS']
+
+    # 获取系统当前可用字体列表
+    system_font_names = [f.name for f in fm.fontManager.ttflist]
+
+    # 找到第一个可用的系统字体
+    available_system_font = None
+    for font in preferred_fonts:
+        if font in system_font_names:
+            available_system_font = font
+            print(f"✅ Found system font: {font}")
+            break
+
+    # 2. 尝试加载自定义字体 (作为补充)
+    custom_font_path = None
+    custom_font_name = None
+
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    project_root = os.path.dirname(current_dir) # Go back to project_root
+    # 尝试回退一级找 fonts 目录
+    possible_paths = [
+        os.path.join(os.path.dirname(current_dir), "fonts", "simsunb.ttf"), # ../fonts/
+        os.path.join("fonts", "simsunb.ttf"), # ./fonts/
+        os.path.join(project_root, "fonts", "simsunb.ttf") # project_root/fonts/
+    ]
 
-    # Modify this to your specific font file name
-    font_file_name = 'SimsunExtG.ttf'
-    font_path = os.path.join(project_root, "fonts", font_file_name)
+    for path in possible_paths:
+        if os.path.exists(path):
+            custom_font_path = path
+            break
 
-    # 2. Fallback check
-    if not os.path.exists(font_path):
-        font_path = os.path.join("fonts", font_file_name)
-
-    if os.path.exists(font_path):
+    if custom_font_path:
         try:
-            # 3. Add font dynamically
-            fm.fontManager.addfont(font_path)
-
-            # 4. Get internal font name
-            prop = fm.FontProperties(fname=font_path)
+            fm.fontManager.addfont(custom_font_path)
+            prop = fm.FontProperties(fname=custom_font_path)
             custom_font_name = prop.get_name()
-
-            # 5. Set as default globally
-            plt.rcParams['font.family'] = 'sans-serif'
-            plt.rcParams['font.sans-serif'] = [custom_font_name, 'DejaVu Sans', 'Arial']
-            plt.rcParams['axes.unicode_minus'] = False
-
-            print(f"✅ Successfully loaded custom font: {custom_font_name} from {font_path}")
-            return True
+            print(f"✅ Loaded custom font: {custom_font_name} from {custom_font_path}")
         except Exception as e:
-            st.error(f"Font loading error: {e}")
-            return False
-    else:
-        print(f"⚠️ Font file not found: {font_path}. Using system defaults...")
-        plt.rcParams['font.sans-serif'] = ['WenQuanYi Zen Hei', 'Noto Sans CJK SC', 'SimHei', 'Arial']
-        plt.rcParams['axes.unicode_minus'] = False
-        return False
+            print(f"⚠️ Failed to load custom font: {e}")
+
+    # 3. 构建最终的字体优先级列表
+    # 将发现的系统字体放在最前面，因为它最可能是完整的
+    final_font_list = ['DejaVu Sans', 'Arial'] # 英文保底
+
+    if custom_font_name:
+        # 注意：SimSun-ExtB (simsunb.ttf) 通常缺常用字，所以如果有系统字体，我们把自定义字体放在系统字体之后
+        final_font_list.insert(0, custom_font_name)
+
+    if available_system_font:
+        # 强力推荐：如果找到了文泉驿或Noto，把它们提到最高优先级，覆盖掉可能缺字的自定义字体
+        final_font_list.insert(0, available_system_font)
+
+    # 4. 应用配置
+    plt.rcParams['font.family'] = 'sans-serif'
+    plt.rcParams['font.sans-serif'] = final_font_list
+    plt.rcParams['axes.unicode_minus'] = False # 解决负号显示为方块的问题
+
+    print(f"👉 Final font priority: {final_font_list}")
+    return True
 
 # Configure font globally at startup
 configure_chinese_font()

@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 from scipy.stats import norm
 import matplotlib.ticker as mtick
 import matplotlib.font_manager as fm
+# import requests  # Removed request module as per SimHei manual configuration
 
 # ==========================================
 # 1. SETUP: Path & Imports
@@ -37,72 +38,33 @@ except ImportError as e:
 # ==========================================
 def configure_chinese_font():
     """
-    配置中文字体。
-    优先寻找系统自带的 'WenQuanYi Zen Hei' (Streamlit Cloud 常用)，
-    其次尝试加载项目目录下的自定义字体。
+    配置中文字体。使用项目内上传的 SimHei.ttf 文件。
+    NOTE: 请确保 SimHei.ttf 文件位于项目根目录下的 fonts/ 文件夹内。
     """
-    # 1. 优先列表：Streamlit Cloud / Linux 常用中文字体
-    # 'WenQuanYi Zen Hei' 是最稳妥的选择，'SimSun-ExtB' 往往缺字，所以排在后面或仅作为备选
-    preferred_fonts = ['WenQuanYi Zen Hei', 'Noto Sans CJK SC', 'SimHei', 'Microsoft YaHei', 'SimSun', 'Arial Unicode MS']
+    # 1. 定义字体路径
+    font_name = "SimHei.ttf"
+    # 假设 SimHei.ttf 位于项目根目录的 fonts/ 文件夹中
+    font_path = os.path.join(project_root, "fonts", font_name)
 
-    # 获取系统当前可用字体列表
-    system_font_names = [f.name for f in fm.fontManager.ttflist]
-
-    # 找到第一个可用的系统字体
-    available_system_font = None
-    for font in preferred_fonts:
-        if font in system_font_names:
-            available_system_font = font
-            print(f"✅ Found system font: {font}")
-            break
-
-    # 2. 尝试加载自定义字体 (作为补充)
-    custom_font_path = None
-    custom_font_name = None
-
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    # 尝试回退一级找 fonts 目录
-    possible_paths = [
-        os.path.join(os.path.dirname(current_dir), "fonts", "simsunb.ttf"), # ../fonts/
-        os.path.join("fonts", "simsunb.ttf"), # ./fonts/
-        os.path.join(project_root, "fonts", "simsunb.ttf") # project_root/fonts/
-    ]
-
-    for path in possible_paths:
-        if os.path.exists(path):
-            custom_font_path = path
-            break
-
-    if custom_font_path:
+    if os.path.exists(font_path):
         try:
-            fm.fontManager.addfont(custom_font_path)
-            prop = fm.FontProperties(fname=custom_font_path)
+            # 2. 注册并加载字体
+            fm.fontManager.addfont(font_path)
+            prop = fm.FontProperties(fname=font_path)
             custom_font_name = prop.get_name()
-            print(f"✅ Loaded custom font: {custom_font_name} from {custom_font_path}")
+
+            # 3. 应用配置
+            plt.rcParams['font.family'] = 'sans-serif'
+            plt.rcParams['font.sans-serif'] = [custom_font_name, 'DejaVu Sans', 'Arial']
+            plt.rcParams['axes.unicode_minus'] = False
+            print(f"✅ Successfully loaded custom font: {custom_font_name} from {font_path}")
         except Exception as e:
-            print(f"⚠️ Failed to load custom font: {e}")
+            st.warning(f"❌ 字体加载失败: {e}。请检查文件是否损坏或路径是否正确。")
+    else:
+        st.warning(f"⚠️ 未找到字体文件：{font_path}。请确认已将 SimHei.ttf 上传到项目的 'fonts/' 目录下。")
 
-    # 3. 构建最终的字体优先级列表
-    # 将发现的系统字体放在最前面，因为它最可能是完整的
-    final_font_list = ['DejaVu Sans', 'Arial'] # 英文保底
 
-    if custom_font_name:
-        # 注意：SimSun-ExtB (simsunb.ttf) 通常缺常用字，所以如果有系统字体，我们把自定义字体放在系统字体之后
-        final_font_list.insert(0, custom_font_name)
-
-    if available_system_font:
-        # 强力推荐：如果找到了文泉驿或Noto，把它们提到最高优先级，覆盖掉可能缺字的自定义字体
-        final_font_list.insert(0, available_system_font)
-
-    # 4. 应用配置
-    plt.rcParams['font.family'] = 'sans-serif'
-    plt.rcParams['font.sans-serif'] = final_font_list
-    plt.rcParams['axes.unicode_minus'] = False # 解决负号显示为方块的问题
-
-    print(f"👉 Final font priority: {final_font_list}")
-    return True
-
-# Configure font globally at startup
+# 在脚本启动时立即执行配置
 configure_chinese_font()
 
 # ==========================================
@@ -685,7 +647,7 @@ def page_multi_asset_normalization(max_leverage_cap):
     }, inplace=True)
 
     df_display['原始 Kelly %'] = df_display['原始 Kelly %'].apply(lambda x: f"{x:.2%}")
-    df_display['最终仓位 %'] = df_display['最终仓位 %'].apply(lambda x: '**{}**'.format(f'{x:.2%}'))
+    df_display['最终仓位 %'] = df_display['Final_Pct'].apply(lambda x: '**{}**'.format(f'{x:.2%}'))
     df_display['净优势 (ERP)'] = df_display['净优势 (ERP)'].apply(lambda x: f"{x:.2%}")
     df_display['杠杆 (L)'] = df_display['杠杆 (L)'].apply(lambda x: f"{x:.2f}x")
     df_display['LEAPS波动率'] = df_display['LEAPS波动率'].apply(lambda x: f"{x:.2%}")

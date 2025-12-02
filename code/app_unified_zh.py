@@ -36,33 +36,51 @@ except ImportError as e:
 # 2. Matplotlib Font Configuration (Chinese Support)
 # ==========================================
 
-# 1. 定义 Streamlit Cloud 上文泉驿字体的系统路径
-FONT_PATH = '/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc'
-FONT_NAME = 'WenQuanYi Zen Hei'
+# ==========================================
+# 2. Matplotlib Font Configuration (Chinese Support)
+# ==========================================
+import matplotlib.font_manager as fm # 确保这里已导入 font_manager
+import os
 
-# 2. 尝试强制加载字体并清除缓存
+# --- 字体文件加载与配置 ---
+# 假设字体文件位于项目根目录下的 /fonts/SimHei.ttf
+# 请根据您上传的文件名和路径进行修改！
+FONT_FILE_NAME = 'SimHei.ttf'  # <--- 请检查您上传的文件名
+FONT_PATH = os.path.join(os.getcwd(), "fonts", FONT_FILE_NAME)
+
+FONT_FAMILY_NAME = 'SimHeiCustom' # 给自定义加载的字体取一个独一无二的名字
+
 try:
     if os.path.exists(FONT_PATH):
-        # 强制 Matplotlib 注册此字体
+        # 1. 强制 Matplotlib 注册此字体文件
         fm.fontManager.addfont(FONT_PATH)
 
-        # 强制清理缓存（这是关键步骤）
-        # 注意：在某些 Matplotlib 版本中，这可能会引发警告，但仍需执行。
+        # 2. 尝试获取注册后的字体名称（可能与文件名不同）
+        prop = fm.FontProperties(fname=FONT_PATH)
+        FONT_FAMILY_NAME = prop.get_name() # 使用 Matplotlib 识别的真实名称
+
+        # 3. 强制清理缓存（防止旧配置干扰）
         fm._rebuild()
 
-    # 3. 设置全局默认字体
-    plt.rcParams['font.family'] = 'sans-serif'
-    plt.rcParams['font.sans-serif'] = [
-        FONT_NAME,             # 优先使用 WenQuanYi Zen Hei
-        'Arial',
-        'DejaVu Sans',
-        'Verdana'
-    ]
-    plt.rcParams['axes.unicode_minus'] = False # 解决负号显示问题
+        # 4. 设置全局默认字体
+        plt.rcParams['font.family'] = 'sans-serif'
+        plt.rcParams['font.sans-serif'] = [
+            FONT_FAMILY_NAME,  # 优先使用我们手动加载的字体
+            'DejaVu Sans',
+            'Arial'
+        ]
+
+    else:
+        # 如果字体文件不存在，打印警告并使用系统回退
+        print(f"Warning: Custom font file not found at {FONT_PATH}. Falling back to default.")
+        plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Arial']
+
+    plt.rcParams['axes.unicode_minus'] = False
+
 except Exception as e:
-    # 如果路径或 addfont 失败，打印错误并回退
-    print(f"Font loading failed: {e}")
+    print(f"FATAL FONT ERROR: {e}")
     plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Arial']
+# --- 字体配置结束 ---
 
 # ==========================================
 # 3. HELPER FUNCTIONS FOR MONTE CARLO

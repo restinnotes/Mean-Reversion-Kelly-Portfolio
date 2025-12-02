@@ -34,12 +34,11 @@ except ImportError as e:
 # ==========================================
 # 2. Matplotlib Font Configuration (Chinese Support)
 # ==========================================
+# 使用服务器上可安装的开源中文字体（如 文泉驿正黑）
 plt.rcParams['font.sans-serif'] = [
-    'SimHei', 'Microsoft YaHei', 'SimSun', 'Arial Unicode MS',
-    'Arial', 'DejaVu Sans', 'Verdana'
+    'WenQuanYi Zen Hei', 'Arial', 'DejaVu Sans', 'Verdana'
 ]
 plt.rcParams['axes.unicode_minus'] = False
-
 
 # ==========================================
 # 3. HELPER FUNCTIONS FOR MONTE CARLO

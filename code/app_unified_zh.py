@@ -24,7 +24,7 @@ sys.path.append(os.path.join(project_root, "code", "utils"))
 sys.path.append(os.path.join(project_root, "code", "strategies"))
 
 try:
-    from lambda_tools import get_ou_for_ticker, calculate_ou_params
+    from lambda_tools import get_ou_for_ticker, calculate_ou_params, calculate_historical_ma_reversion
     from sigma_tools import get_sigma
     from optimal_expiry_solver import bs_greek_calculator, calculate_single_asset_kelly_ratio
 except ImportError as e:
@@ -236,28 +236,44 @@ def page_diagnosis(ticker, window_days):
     current_mean = df['rolling_mean'].iloc[-1]
     current_sigma_daily = sigmas_daily_hist[-1]
 
-    # New code for T-stat calculation and display logic START
+    # ... (上接 current_pe = ...; current_mean = ... 等变量定义)
 
-    # 获取 t_stat
-    # 获取用于计算 current_lambda 的最新窗口数据
-    ou_last_snapshot = calculate_ou_params(df['value'].iloc[-window_days:])
-    current_t_stat = ou_last_snapshot.get('t_stat', 0.0) if ou_last_snapshot else 0.0
+    # =========================================================
+    # UPDATE: 切换至 Part 4 (Robust Historical Verification) 逻辑
+    # =========================================================
 
-    # 判定置信度文案
-    if current_t_stat < -2.86:
-        conf_label = "⭐⭐⭐ 极高 (Strong)"
+    # 1. 准备完整的时间序列 (Part 4 逻辑需要利用历史数据来验证“均线回归”的结构性)
+    #    注意：这里必须使用全部历史数据，而不仅仅是最近 window_days 的数据
+    full_series_for_robust = df.set_index('date')['value'].sort_index()
+
+    # 2. 计算历史 MA 回归的结构性参数
+    #    调用 calculate_historical_ma_reversion (即 lambda_tools.py 中的 Part 4)
+    #    它回答的问题是：“从历史来看，当股价偏离 window 日均线时，它是否显著倾向于回归？”
+    robust_stats = calculate_historical_ma_reversion(full_series_for_robust, window=window_days)
+
+    if robust_stats:
+        # 获取结构性 T-Stat 和 置信度
+        current_t_stat = robust_stats.get('structural_t_stat', 0.0)
+        current_conf = robust_stats.get('structural_confidence', 0.0)
+    else:
+        current_t_stat = 0.0
+        current_conf = 0.0
+
+    # 3. 基于“历史结构性置信度”判定强度 (文案相应调整)
+    if current_conf >= 95.0:
+        conf_label = "⭐⭐⭐ 极高 (Robust)"
         conf_color = "green"
-        conf_help = "统计显著性 > 95%。拒绝随机游走假设，均值回归特征非常明显。"
-    elif current_t_stat < -1.90:
-        conf_label = "⭐⭐ 较高 (Moderate)"
+        conf_help = f"历史结构性置信度 {current_conf:.1f}% (>95%)。\n数据证实：该资产在历史上长期遵循围绕 {window_days} 日均线的均值回归规律，策略有效性极高。"
+    elif current_conf >= 85.0:
+        conf_label = "⭐⭐ 较高 (Valid)"
         conf_color = "orange"
-        conf_help = "统计显著性 > 90%。均值回归特征存在，但需留意。"
+        conf_help = f"历史结构性置信度 {current_conf:.1f}% (>85%)。\n数据证实：该资产存在均值回归特征，策略长期有效，但噪音稍大。"
     else:
         conf_label = "⚠️ 存疑 (Weak)"
         conf_color = "red"
-        conf_help = f"T-Stat ({current_t_stat:.2f}) 不显著。当前走势可能接近随机游走，Lambda 值参考意义下降。"
+        conf_help = f"历史结构性置信度 {current_conf:.1f}% (<85%)。\n警惕：该资产历史上并没有表现出稳定的均值回归特征（可能是趋势型或随机游走），当前策略可能不适用。"
 
-    # New code for T-stat calculation and display logic END
+
 
     # 将 Lambda 存入 Session 供后续使用
     if st.session_state.ticker == ticker:
@@ -269,7 +285,7 @@ def page_diagnosis(ticker, window_days):
     # =========================================================
     st.subheader("1. 核心参数验证 (Diagnosis)")
 
-    col_d1, col_d2, col_d3 = st.columns(3) # 改为 3 列
+    col_d1, col_d2, col_d3 = st.columns(3)
 
     with col_d1:
         st.markdown("**估值偏离度**")
@@ -282,9 +298,10 @@ def page_diagnosis(ticker, window_days):
         st.caption(f"半衰期: {current_hl:.1f} 天")
 
     with col_d3:
-        st.markdown("**统计可信度 (ADF Test)**")
-        st.markdown(f":{conf_color}[**{conf_label}**]")
-        st.caption(f"T-Stat: {current_t_stat:.2f}", help=conf_help)
+        # UPDATE: 显示置信度百分比
+        st.markdown("**均值回归置信度**")
+        st.markdown(f":{conf_color}[**{current_conf:.1f}%**]")
+        st.caption(f"{conf_label}", help=f"T-Stat: {current_t_stat:.2f}\n{conf_help}")
 
     # --- 历史图表 (Visual Verification) ---
     # Plot 1: PE Context

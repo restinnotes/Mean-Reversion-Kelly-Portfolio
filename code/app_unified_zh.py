@@ -154,9 +154,6 @@ def analyze_risk_reward(paths, current_pe, days_map):
         })
 
     return pd.DataFrame(results)
-# ---------------------------------------------------------
-# 请用此完整函数替换 code/app_unified_zh.py 中的 page_diagnosis
-# ---------------------------------------------------------
 
 # ---------------------------------------------------------
 # 请用此【逻辑重构版】替换 code/app_unified_zh.py 中的 page_diagnosis
@@ -377,7 +374,7 @@ def page_solver(P_CURRENT, V_TARGET, V_HARD_FLOOR, V_FILL_PLAN, LAMBDA, SIGMA_AS
             **本工具的目标**：
             寻找一张合约，使得：
             1.  **现在 ($P={P_CURRENT}$)**：应用 **起始 K={K_FACTOR}** 时，仓位适中。
-            2.  **到底 ($P={V_FILL_PLAN}$)**：应用 **最终 K=Target_K** 时，建议仓位 **恰好为 100%**。
+            2.  **到底 ($P={V_FILL_PLAN}$)**：应用 **最终 K={V_FILL_PLAN}** 时，建议仓位 **恰好为 100%**。
 
             这样你就能设计出一个“越跌越买，到底正好满仓”的完美加仓路径。
         """)
@@ -389,9 +386,10 @@ def page_solver(P_CURRENT, V_TARGET, V_HARD_FLOOR, V_FILL_PLAN, LAMBDA, SIGMA_AS
         st.metric("起始 K 值 (Start)", f"{K_FACTOR:.2f}", help="当前左侧边栏设定的 K 值")
     with col_k2:
         # 允许用户设定补仓时的 K
+        # MODIFIED: Default value set to 0.5 per user request (Constant K strategy by default)
         k_fill_target = st.number_input("满仓 K 值 (Target at Fill)",
-                                      min_value=K_FACTOR, max_value=2.0, value=1.0, step=0.1,
-                                      help="当股价跌到 V_fill 时，你愿意使用多大的 K 值？通常设为 1.0 (全凯利)。")
+                                      min_value=K_FACTOR, max_value=2.0, value=0.5, step=0.1,
+                                      help="当股价跌到 V_fill 时，你愿意使用多大的 K 值？通常设为 0.5 (保持不变) 或 1.0 (激进加仓)。")
 
     st.markdown("---")
 
@@ -408,8 +406,8 @@ def page_solver(P_CURRENT, V_TARGET, V_HARD_FLOOR, V_FILL_PLAN, LAMBDA, SIGMA_AS
 
     # --- 2. 求解循环 ---
     # 我们遍历期限，寻找那张能在 V_fill 配合 k_fill_target 达到 100% 的合约
-
-    for days in range(60, 1100, 7):
+    # MODIFIED: Start range from 90 days to avoid volatile short-term structures
+    for days in range(90, 1100, 7):
         T = days / 365.0
 
         # A. 计算【当前】状态 (P_CURRENT, k=K_FACTOR)
@@ -599,13 +597,14 @@ def page_dashboard(ticker, lambda_val, sigma_val, r_f, k_factor, beta, P, V_targ
         st.write(f"**信心系数 (Alpha):** {alpha:.3f}")
         with st.expander("❓ 信心系数 (Alpha) 解读"):
             st.markdown(r"""
-                **Alpha (信心折扣系数)** 是一个动态调节因子，用于根据当前股价**距离硬底的远近**来调整仓位。
+                **Alpha (信心折扣系数)** 是一个动态调节因子，用于对 **Kelly 理论仓位进行限制和折扣**，其值始终 $\le 1.0$，确保您不会过度买入回归潜力减弱的资产。
 
                 $$\alpha_i = 1 - \beta \cdot \left( \frac{P_i - P_{\text{floor}, i}}{V_i - P_{\text{floor}, i}} \right)$$
 
-                * **当股价接近硬底 ($V_{\text{hard}}$) 时:** $\alpha \to 1.0$，信心最高，推荐分配全部 Kelly 仓位。
-                * **当股价接近目标价 ($V_{\text{target}}$) 时:** $\alpha \to (1-\beta)$，折扣生效，Kelly 仓位被缩减，以保留利润。
-            """)
+                * **关系强调：** $\alpha$ 与您设定的**估值折扣系数 ($\beta$) 成负相关关系**。$\beta$ 越大，接近目标价时的折扣越深。
+                * **当股价接近硬底 ($V_{\text{hard}}$) 时:** $\alpha \to 1.0$，折扣取消，推荐分配全部 Kelly 仓位（信心最高）。
+                * **当股价接近目标价 ($V_{\text{target}}$) 时:** $\alpha \to (1-\beta)$，折扣生效，Kelly 仓位被缩减。
+    """)
 
         st.write(f"**LEAPS 年化波动率:** {sigma_leaps:.2%}")
 

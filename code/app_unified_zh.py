@@ -4,17 +4,17 @@ import pandas as pd
 import os
 import sys
 import matplotlib.pyplot as plt
-import matplotlib.font_manager as fm
+from scipy.stats import norm # Used for Monte Carlo simulation
+import matplotlib.ticker as mtick # Import for Sigma Plot
 
 # ==========================================
 # 1. SETUP: Path & Imports
 # ==========================================
-# 使用 os.path.dirname(sys.executable) 来获取打包后的运行目录，
-# 否则在未打包环境下使用 os.path.abspath(__file__)
 def get_resource_root():
     """Determines the correct root path for resources (e.g., pe_csv) in both development and PyInstaller environments."""
     if getattr(sys, 'frozen', False):
         # Running as a PyInstaller bundle
+        # In a bundled app, the resources are next to the executable
         return os.path.dirname(sys.executable)
     else:
         # Running in development environment
@@ -25,31 +25,89 @@ def get_resource_root():
 project_root = get_resource_root()
 
 # Add necessary paths for imports
-# In the executable, these relative paths will be handled by PyInstaller hooks,
-# but we keep them for development convenience.
 sys.path.append(os.path.join(project_root, "code", "utils"))
-sys.path.append(os.path.join(project_root, "code", "strategies")) # Use project_root to resolve path consistently
+sys.path.append(os.path.join(project_root, "code", "strategies"))
 
 # Import all core functions
 try:
-    from utils.lambda_tools import get_ou_for_ticker, calculate_ou_params
-    from utils.sigma_tools import get_sigma
+    # We must use the local versions for this self-contained file structure
+    from lambda_tools import get_ou_for_ticker, calculate_ou_params
+    from sigma_tools import get_sigma
     from optimal_expiry_solver import bs_greek_calculator, calculate_single_asset_kelly_ratio
 except ImportError as e:
-    st.error(f"Module import error. Please check utils/ and strategies/ directories: {e}")
-    st.stop()
+    # Use st.error instead of st.stop() to show error message
+    st.error(f"Module import error. Please ensure dependency files (lambda_tools.py, sigma_tools.py, optimal_expiry_solver.py) are accessible relative to the app structure: {e}")
+    # Fallback to simple imports for notebook/testing environments if local modules fail
+    # Note: In a real environment, this import must succeed.
+    pass
 
 
 # ==========================================
-# 2. Matplotlib Font Configuration (English for consistency)
+# 2. Matplotlib Font Configuration (Chinese Support)
 # ==========================================
-# We use English labels in the plots to avoid common Matplotlib Chinese font issues.
-plt.rcParams['font.sans-serif'] = ['Arial', 'DejaVu Sans', 'Verdana']
-plt.rcParams['axes.unicode_minus'] = True
+# Use a common Chinese font list to ensure correct display of plot labels.
+plt.rcParams['font.sans-serif'] = [
+    'SimHei', 'Microsoft YaHei', 'SimSun', 'Arial Unicode MS',
+    'Arial', 'DejaVu Sans', 'Verdana'
+]
+plt.rcParams['axes.unicode_minus'] = False # Fix minus sign display
 
 
 # ==========================================
-# 3. PAGE LOGIC FUNCTIONS (封装各应用逻辑)
+# 3. HELPER FUNCTIONS FOR MONTE CARLO
+# ==========================================
+
+def run_simulation(current_pe, target_pe, lambda_annual, sigma_daily, days_to_simulate=252, num_paths=10000):
+    """Runs Monte Carlo simulation for P/E ratio using the Ornstein-Uhlenbeck process."""
+    dt = 1/252
+    paths = np.zeros((days_to_simulate + 1, num_paths))
+    paths[0] = current_pe
+    theta = target_pe
+
+    for t in range(1, days_to_simulate + 1):
+        X_t = paths[t-1]
+        drift = lambda_annual * (theta - X_t) * dt
+        # Use daily volatility of the PE ratio, calculated by OU regression (sigma of residuals)
+        shock = sigma_daily * np.random.normal(0, 1, num_paths)
+        paths[t] = X_t + drift + shock
+    return paths
+
+def analyze_probabilities(paths, target_pe, current_pe):
+    """Analyzes simulated paths to calculate Touch and Hold probabilities."""
+    days_simulated = paths.shape[0] - 1
+    # Check points in TRADING DAYS
+    check_points = [21, 42, 63, 126, 189, 252]
+    results = []
+    is_long = target_pe > current_pe
+
+    for day in check_points:
+        if day > days_simulated: continue
+        final_values = paths[day]
+
+        # Hold Prob: probability of ending at or beyond the target
+        if is_long: prob_end = np.mean(final_values >= target_pe)
+        else: prob_end = np.mean(final_values <= target_pe)
+
+        # Touch Prob: probability of hitting or crossing the target at any point
+        path_slice = paths[:day+1, :]
+        if is_long: has_hit = np.any(path_slice >= target_pe, axis=0)
+        else: has_hit = np.any(path_slice <= target_pe, axis=0)
+        prob_touch = np.mean(has_hit)
+
+        approx_cal_days = int(day * (365/252))
+
+        results.append({
+            "交易日": day,
+            "~日历日": f"{approx_cal_days}d",
+            "触摸目标概率": prob_touch,
+            "结束时保持概率": prob_end,
+            "预期PE": np.mean(final_values)
+        })
+    return pd.DataFrame(results)
+
+
+# ==========================================
+# 4. PAGE LOGIC FUNCTIONS (封装各应用逻辑)
 # ==========================================
 
 # --- Page 1: 市场诊断 (Rolling Analysis) ---
@@ -72,56 +130,201 @@ def page_diagnosis(ticker, window_days):
         return
 
     # --- 1. 计算滚动指标 ---
-    df['rolling_mean'] = df['value'].rolling(window=window_days).mean()
-    dates = []; pe_values = []; pe_means = []; lambdas_annual = []; half_lives = []; sigmas_daily = []
-
-    if len(df) >= window_days:
-        window_data = df.iloc[-window_days:]
-        series = window_data.set_index('date')['value']
-        try:
-            ou = calculate_ou_params(series)
-            if ou:
-                dates = df['date'].iloc[window_days:].tolist()
-                pe_values = df['value'].iloc[window_days:].tolist()
-                pe_means = df['rolling_mean'].iloc[window_days:].tolist()
-                lambdas_annual.extend([ou['lambda'] * 252] * (len(dates) or 1))
-                half_lives.extend([ou['half_life']] * (len(dates) or 1))
-                sigmas_daily.extend([ou['sigma']] * (len(dates) or 1))
-        except Exception:
-            st.warning("滚动计算发生异常，请检查数据质量。")
-
-    if not lambdas_annual:
+    if len(df) < window_days:
         st.warning("数据不足，无法进行滚动指标计算。")
         return
 
-    current_lambda = lambdas_annual[-1]
-    current_hl = half_lives[-1]
-    current_pe = pe_values[-1]
-    current_mean = pe_means[-1]
+    df['rolling_mean'] = df['value'].rolling(window=window_days).mean()
+
+    # Storage for historical plot data
+    dates_hist = []; lambdas_annual_hist = []; half_lives_hist = []; sigmas_daily_hist = []
+
+    # Calculate OU parameters across the historical window for plotting trends
+    start_index = window_days - 1
+
+    # Only perform calculation if necessary modules are imported
+    if 'calculate_ou_params' in globals():
+        for i in range(start_index, len(df)):
+            window_series = df.iloc[i-window_days+1 : i+1].set_index('date')['value']
+            try:
+                # calculate_ou_params is from lambda_tools.py
+                ou_hist = calculate_ou_params(window_series)
+                if ou_hist:
+                    dates_hist.append(df.iloc[i]['date'])
+                    lambdas_annual_hist.append(ou_hist['lambda'] * 252)
+                    half_lives_hist.append(ou_hist['half_life'])
+                    sigmas_daily_hist.append(ou_hist['sigma'])
+            except Exception:
+                # Skip iterations where calculation fails
+                continue
+    else:
+        st.error("依赖模块 (lambda_tools.py) 未导入，无法进行 OU 参数滚动计算。")
+        return
+
+
+    if not lambdas_annual_hist:
+        st.warning("数据不足，无法进行滚动指标计算。")
+        return
+
+    # Get current snapshot values
+    current_lambda = lambdas_annual_hist[-1]
+    current_hl = half_lives_hist[-1]
+    current_pe = df['value'].iloc[-1]
+    current_mean = df['rolling_mean'].iloc[-1]
+    current_sigma_daily = sigmas_daily_hist[-1]
+
+    # --- Data Flow Fix: Update Session State with Rolling Lambda ---
+    # Only update lambda if it's the current active ticker
+    if st.session_state.ticker == ticker:
+        # Note: We only update the raw lambda state here; the user needs to manually set the final value
+        st.session_state['lambda'] = current_lambda
+    # -----------------------------------------------------------
 
     # --- 2. 诊断报告 (简化) ---
+    st.subheader("诊断报告与 Monte Carlo 模拟")
+    st.markdown("---")
     col_d1, col_d2 = st.columns(2)
+
     with col_d1:
-        st.markdown("**PE Valuation Status**")
-        st.code(f"Current PE: {current_pe:.2f}")
-        st.code(f"{window_days}d Moving Avg: {current_mean:.2f}")
+        st.markdown("**PE 估值状态**")
+        st.code(f"当前 PE: {current_pe:.2f}")
+        st.code(f"{window_days}日均值: {current_mean:.2f}")
+
     with col_d2:
-        st.markdown("**Reversion & Volatility**")
-        st.code(f"Annualized Lambda (λ): {current_lambda:.4f}")
-        st.code(f"Half-Life: {current_hl:.2f} Days")
+        st.markdown("**回归与波动率**")
+        st.code(f"年化 Lambda (λ): {current_lambda:.4f}")
+        st.code(f"半衰期: {current_hl:.2f} 天")
+        st.code(f"日波动率 (σ_PE): {current_sigma_daily:.4f}")
 
     st.markdown("---")
 
-    # --- 3. Plotting (使用英文标签) ---
-    if len(plot_df := pd.DataFrame({'Date': dates, 'PE_Ratio': pe_values, 'MA': pe_means}).set_index('Date')) > 0:
-        st.markdown("##### Visual Diagnosis (Simplified Plot)")
-        fig1, ax0 = plt.subplots(figsize=(10, 3))
-        ax0.plot(plot_df.index, plot_df['PE_Ratio'], 'k', alpha=0.8, label='PE Ratio')
-        ax0.plot(plot_df.index, plot_df['MA'], 'b--', label=f'{window_days}d Moving Avg')
-        ax0.set_title(f'{ticker} PE Ratio vs MA', fontsize=10)
-        ax0.legend(loc='upper left'); ax0.grid(True, alpha=0.3)
-        st.pyplot(fig1)
-        plt.close(fig1)
+    # ------------------------------------------
+
+    # --- 3. Monte Carlo 模拟 ---
+    st.markdown("##### Monte Carlo 模拟结果")
+    st.caption(f"目标: PE {current_pe:.2f} 修复到均值 PE {current_mean:.2f} | 模拟路径: 10,000条")
+
+    paths = run_simulation(current_pe, current_mean, current_lambda, current_sigma_daily)
+    df_probs = analyze_probabilities(paths, current_mean, current_pe)
+
+    safe_days = 0
+    safe_cal_days = 0
+    found_safe_zone = False
+
+    for idx, row in df_probs.iterrows():
+        if row['触摸目标概率'] > 0.9:
+            safe_days = int(row['交易日'])
+            safe_cal_days = int(row['~日历日'].replace('d',''))
+            found_safe_zone = True
+            break
+
+    df_probs['触摸目标概率'] = df_probs['触摸目标概率'].apply(lambda x: f"{x:.1%}")
+    df_probs['结束时保持概率'] = df_probs['结束时保持概率'].apply(lambda x: f"{x:.1%}")
+    df_probs['预期PE'] = df_probs['预期PE'].apply(lambda x: f"{x:.2f}")
+    st.dataframe(df_probs, hide_index=True) # Monte Carlo 结果表格
+
+    if found_safe_zone:
+        st.success(f"**[推荐行动计划]**: 90% 概率触摸目标所需的最短时间为 **{safe_days} 交易日 (~{safe_cal_days} 日历日)**。")
+        st.info(f"选品建议：购买到期日 **大于等于** {safe_cal_days} 日历日的 LEAPS 期权。")
+    else:
+        st.warning(f"**[警告]**: 在 1 年内无法达到 90% 的目标触摸概率。回归缓慢/不确定。建议购买 > 1 年的 LEAPS 或保持现金。")
+
+    st.markdown("---")
+
+    # --- 4. Plotting (三张图表) ---
+    plot_df = df.iloc[start_index:].copy()
+    plot_df['Lambda'] = lambdas_annual_hist
+    plot_df['Half_Life'] = half_lives_hist
+    plot_df.set_index('date', inplace=True)
+
+    # Get percentiles for plot lines
+    lambda_80 = np.percentile(lambdas_annual_hist, 80)
+    lambda_20 = np.percentile(lambdas_annual_hist, 20)
+    hl_90 = np.percentile(half_lives_hist, 90)
+
+    # Plot 1: PE Context (Chinese Labels/Titles)
+    fig1, ax0 = plt.subplots(figsize=(10, 3))
+    ax0.plot(plot_df.index, plot_df['value'], 'k', alpha=0.8, label='PE 比率')
+    ax0.plot(plot_df.index, plot_df['rolling_mean'], 'b--', label=f'{window_days}日移动平均')
+    ax0.set_title(f'{ticker} PE 比率与 {window_days} 日均线', fontsize=10)
+    ax0.set_xlabel("日期")
+    ax0.set_ylabel("PE 比率")
+    ax0.legend(loc='upper left'); ax0.grid(True, alpha=0.3)
+    st.pyplot(fig1)
+    plt.close(fig1)
+
+    # Plot 2: Lambda (Chinese Labels/Titles) - LABEL FIX
+    fig2, ax1 = plt.subplots(figsize=(10, 3))
+    ax1.plot(plot_df.index, plot_df['Lambda'], color='#1f77b4', label='年化 Lambda')
+    ax1.axhline(lambda_80, color='r', linestyle='--', label=f'80%分位数 ({lambda_80:.1f})') # FIX
+    ax1.axhline(lambda_20, color='g', linestyle='--', label=f'20%分位数 ({lambda_20:.1f})') # FIX
+    ax1.set_title('回归速度 (Lambda)', fontsize=10)
+    ax1.set_xlabel("日期")
+    ax1.set_ylabel("Lambda (年化)")
+    ax1.legend(loc='upper left'); ax1.grid(True, alpha=0.3)
+    st.pyplot(fig2)
+    plt.close(fig2)
+
+    # Plot 3: Half-Life (Chinese Labels/Titles)
+    fig3, ax2 = plt.subplots(figsize=(10, 3))
+    ax2.plot(plot_df.index, plot_df['Half_Life'], color='#ff7f0e', label='半衰期 (天)')
+    ax2.axhline(hl_90, color='purple', linestyle='--', label=f'90%位风险 ({hl_90:.1f}天)')
+    ax2.set_ylim(0, max(300, hl_90 * 1.5))
+    ax2.set_title('隐含半衰期 (风险)', fontsize=10)
+    ax2.set_xlabel("日期")
+    ax2.set_ylabel("半衰期 (天)")
+    ax2.legend(loc='upper left'); ax2.grid(True, alpha=0.3)
+    st.pyplot(fig3)
+    plt.close(fig3)
+
+    # --- 5. Sigma Plot (Added) ---
+    st.markdown("---")
+    st.subheader("历史波动率诊断 (Sigma Tools)")
+
+    if st.session_state.get('sigma_rolling_data') and ticker in st.session_state.sigma_rolling_data:
+        roll_vol = st.session_state.sigma_rolling_data[ticker]
+        sigma_val = st.session_state.sigma_dict[ticker]
+        window = 252 # Hardcoded as per sigma_tools default
+        percentile = 0.85 # Hardcoded as per sigma_tools default
+
+        # Note: We must ensure roll_vol indices are reset if they were originally dates
+        if isinstance(roll_vol.index, pd.DatetimeIndex):
+            index_for_plot = roll_vol.index
+        else:
+            index_for_plot = roll_vol.index.values
+
+        if not roll_vol.empty:
+            current = roll_vol.iloc[-1]
+            pval = roll_vol.quantile(percentile)
+
+            fig4, ax3 = plt.subplots(figsize=(10, 4))
+
+            # Matplotlib Chinese Font Configuration is already global
+
+            ax3.plot(index_for_plot, roll_vol.values, linewidth=1.4, label=f'{window}d 滚动年化波动率')
+            ax3.axhline(pval, linestyle='--', linewidth=1.5, color='orange', label=f'{percentile*100:.0f}%分位数 = {pval:.2%}')
+
+            # The final sigma value used is max(current, pval) due to safety_lock=True setting in button click
+            final_sigma = max(current, pval)
+            ax3.axhline(final_sigma, linestyle='-', linewidth=1.5, color='green', label=f'最终稳健Sigma = {final_sigma:.2%}')
+
+            ax3.scatter(index_for_plot[-1], current, color='red', s=50, zorder=5, label=f'当前波动率 = {current:.2%}')
+
+
+            ax3.set_title(f"{ticker} 滚动年化波动率 ({window}d) — 用于凯利公式的稳健 Sigma", fontsize=10)
+            ax3.set_xlabel("日期")
+            ax3.set_ylabel("年化波动率")
+            ax3.yaxis.set_major_formatter(mtick.PercentFormatter(1.0))
+            ax3.legend(loc='upper left')
+            ax3.grid(alpha=0.3)
+            plt.tight_layout()
+            st.pyplot(fig4)
+            plt.close(fig4)
+        else:
+            st.warning("无足够的历史数据来绘制滚动波动率图表。")
+    else:
+        st.warning("请在侧边栏点击 '获取历史统计数据' 以加载波动率历史数据。")
+
 
 # --- Page 2: 最优期限求解 (Optimal Expiry Solver) ---
 def page_solver(P_CURRENT, V_TARGET, V_HARD_FLOOR, V_FILL_PLAN, LAMBDA, SIGMA_ASSET, IV_PRICING, R_RISKFREE, ticker):
@@ -129,22 +332,25 @@ def page_solver(P_CURRENT, V_TARGET, V_HARD_FLOOR, V_FILL_PLAN, LAMBDA, SIGMA_AS
     st.subheader(f"资产: {ticker} | P={P_CURRENT}")
     st.markdown("---")
 
-    # The actual find_perfect_expiry function from optimal_expiry_solver.py is complex.
-    # We rely on the core functions being correctly imported and adapted here.
+    # Only proceed if necessary functions are imported
+    if 'bs_greek_calculator' not in globals() or 'calculate_single_asset_kelly_ratio' not in globals():
+        st.error("依赖模块 (optimal_expiry_solver.py) 未导入，无法进行求解。")
+        return
 
     results = []
+    # Note: IV_PRICING should be used for pricing, SIGMA_ASSET for Kelly Risk (Volatility)
     for days in range(30, 1100, 7):
         T = days / 365.0
-        # Use bs_greek_calculator
-        c_price, c_delta, c_theta = bs_greek_calculator(P_CURRENT, V_HARD_FLOOR, T, R_RISKFREE, IV_PRICING)
+        # bs_greek_calculator is imported from optimal_expiry_solver.py
+        c_price, c_delta, c_theta_annual = bs_greek_calculator(P_CURRENT, V_HARD_FLOOR, T, R_RISKFREE, IV_PRICING)
 
-        # Calculate Kelly (k=0.5, beta=0.2 assumed for solver logic)
+        # We assume k=0.5 and beta=0.2 for the Solver's internal Kelly calculation logic
         kelly_full = calculate_single_asset_kelly_ratio(
-            P_CURRENT, c_price, c_delta, c_theta, V_TARGET, V_HARD_FLOOR, LAMBDA, SIGMA_ASSET, R_RISKFREE, beta=0.2
+            P_CURRENT, c_price, c_delta, c_theta_annual, V_TARGET, V_HARD_FLOOR, LAMBDA, SIGMA_ASSET, R_RISKFREE, beta=0.2
         )
         kelly_target = kelly_full * 0.5
 
-        # Calculate Pilot Cap
+        # Pilot Cap calculation
         c0, _, _ = bs_greek_calculator(P_CURRENT, V_HARD_FLOOR, T, R_RISKFREE, IV_PRICING)
         c_fill, _, _ = bs_greek_calculator(V_FILL_PLAN, V_HARD_FLOOR, T, R_RISKFREE, IV_PRICING)
         cap_limit = c0 / (c0 + c_fill) if c0 + c_fill > 0 else 0.0
@@ -163,7 +369,6 @@ def page_solver(P_CURRENT, V_TARGET, V_HARD_FLOOR, V_FILL_PLAN, LAMBDA, SIGMA_AS
         st.warning("未找到有效数据进行求解。请检查输入参数。")
         return
 
-    # Find intersection point (Diff closest to 0)
     best_idx = df['Diff'].abs().idxmin()
     best_row = df.loc[best_idx]
 
@@ -177,31 +382,33 @@ def page_solver(P_CURRENT, V_TARGET, V_HARD_FLOOR, V_FILL_PLAN, LAMBDA, SIGMA_AS
     with col_r3:
         st.metric("期权价格 (BS 估值)", f"${best_row['Option_Price']:.2f}")
 
-    # --- Plotting (使用英文标签) ---
+    # --- Plotting (使用中文标签) ---
     st.markdown("---")
-    st.markdown("##### Offense-Defense Balance Chart")
+    st.markdown("##### 攻守平衡曲线图")
+    st.caption("最优解为进攻曲线 (0.5 * Kelly) 与防守上限 (Pilot Cash Cap) 的交点。")
 
     fig, ax = plt.subplots(figsize=(10, 6))
 
-    ax.plot(df['Days'], df['Kelly_Half'], label='Offense: 0.5 * Kelly Ratio',
+    ax.plot(df['Days'], df['Kelly_Half'], label='进攻: 0.5 * 凯利比例',
              color='blue', linewidth=2, linestyle='--')
 
-    ax.plot(df['Days'], df['Pilot_Cap'], label='Defense: Pilot Cash Cap (1:1 Refill)',
+    # LABEL FIX
+    ax.plot(df['Days'], df['Pilot_Cap'], label='防守：补仓现金上限',
              color='red', linewidth=2)
 
-    ax.scatter(best_row['Days'], best_row['Pilot_Cap'], color='green', s=150, zorder=5, label='Optimal Expiry')
+    ax.scatter(best_row['Days'], best_row['Pilot_Cap'], color='green', s=150, zorder=5, label='最优期限')
 
     ax.annotate(
-        f"Sweet Spot\n{int(best_row['Days'])} Days\n{best_row['Pilot_Cap']:.1%} Alloc",
+        f"最优解\n{int(best_row['Days'])} 天\n{best_row['Pilot_Cap']:.1%} 仓位",
         xy=(best_row['Days'], best_row['Pilot_Cap']),
         xytext=(best_row['Days']+100, best_row['Pilot_Cap']+0.1),
         arrowprops=dict(facecolor='black', shrink=0.05),
         fontsize=10, fontweight='bold'
     )
 
-    ax.set_title(f"Optimal Expiry Solver: {ticker}", fontsize=14)
-    ax.set_xlabel("Days to Expiration", fontsize=12)
-    ax.set_ylabel("Position Allocation %", fontsize=12)
+    ax.set_title(f"最优期限求解器: {ticker}", fontsize=14)
+    ax.set_xlabel("距到期日天数", fontsize=12)
+    ax.set_ylabel("仓位分配百分比", fontsize=12)
 
     ax.legend(fontsize=12, loc='best')
     ax.grid(True, alpha=0.3)
@@ -217,7 +424,7 @@ def page_dashboard(ticker, lambda_val, sigma_val, r_f, k_factor, beta, P, V_targ
     # --- A. Leverage & Cost ---
     if opt_price > 0:
         L = delta * (P / opt_price)
-        theta_annual = (theta / opt_price) * 252.0
+        theta_annual = (theta / opt_price) * 252.0 # theta_daily_abs / option_price * 252.0
 
         # --- B. Returns ---
         mu_stock = lambda_val * np.log(V_target / P)
@@ -250,19 +457,45 @@ def page_dashboard(ticker, lambda_val, sigma_val, r_f, k_factor, beta, P, V_targ
                 st.metric(
                     label="Kelly Allocation %",
                     value=f"{f_cash:.2%}",
-                    delta=f"Leverage: {L:.2f}x"
+                    delta=f"杠杆: {L:.2f}x"
                 )
             else:
-                st.error("Negative Edge (ERP < 0).")
+                st.error("净优势为负 (ERP < 0).")
 
             st.divider()
-            st.write(f"**Net Edge (ERP):** {ERP:.2%}")
-            st.write(f"**Confidence (Alpha):** {alpha:.3f}")
-            st.write(f"**LEAPS Volatility:** {sigma_leaps:.2%}")
+
+            # --- ERP Explanation ---
+            st.write(f"**净优势 (ERP):** {ERP:.2%}")
+            with st.expander("❓ 什么是净优势 (ERP)?"):
+                #                 st.markdown("""
+                st.markdown("""
+                    **ERP (Excess Return Premium)** 是指在扣除所有成本后的**预期年化超额收益率**。
+
+                    $$ \\text{ERP}_i = (\\mu_{\\text{stock}, i} \\cdot L_i) - r_f - \\theta_{\\text{annual}, i} $$
+
+                    * **进攻端:** 均值回归预期收益 $\\times$ 杠杆 $L$
+                    * **防守端:** 减去资金成本 $r_f$ 和时间损耗 $\\theta_{\\text{annual}}$
+
+                    **如果 ERP > 0，则表明这是一笔具有正期望值的交易。**
+                """)
+
+            # --- Alpha Explanation ---
+            st.write(f"**信心系数 (Alpha):** {alpha:.3f}")
+            with st.expander("❓ 什么是信心系数 (Alpha)?"):
+                st.markdown("""
+                    **Alpha (信心折扣系数)** 是一个动态调节因子，用于根据当前股价**距离硬底的远近**来调整仓位。
+
+                    $$ \\alpha_i = 1 - \\beta \\cdot \\left( \\frac{P_i - P_{\\text{floor}, i}}{V_i - P_{\\text{floor}, i}} \\right) $$
+
+                    * **当股价接近硬底 ($V_{\\text{hard}}$) 时:** $\\alpha \\to 1.0$，信心最高，推荐分配全部 Kelly 仓位。
+                    * **当股价接近目标价 ($V_{\\text{target}}$) 时:** $\\alpha \\to (1-\\beta)$，折扣生效，Kelly 仓位被缩减，以保留利润。
+                """)
+
+            st.write(f"**LEAPS 波动率:** {sigma_leaps:.2%}")
 
         with col_m:
-            st.subheader("Scenario Analysis (Fixed Leverage)")
-            st.caption("How allocation changes as price drops towards the hard floor.")
+            st.subheader("情景分析 (固定杠杆)")
+            st.caption("当价格跌向硬底时，仓位如何变化。")
 
             # Generate scenarios (From Floor to Current Price)
             prices = np.linspace(V_hard, P, 50)
@@ -271,11 +504,12 @@ def page_dashboard(ticker, lambda_val, sigma_val, r_f, k_factor, beta, P, V_targ
             for p_sim in prices:
                 # Recalculate Alpha
                 dist = p_sim - V_hard
-                rr = max(0.0, min(1.0, dist / range_len))
+                range_len_sim = max(1e-9, V_target - V_hard)
+                rr = max(0.0, min(1.0, dist / range_len_sim))
                 a_sim = 1.0 - (beta * rr)
                 # Recalc Drift
                 mu_s = lambda_val * np.log(V_target / p_sim)
-                mu_l = mu_s * L
+                mu_l = mu_s * L # Use fixed leverage L
                 # Kelly Calc
                 erp_sim = mu_l - r_f - theta_annual
                 if erp_sim > 0:
@@ -285,90 +519,314 @@ def page_dashboard(ticker, lambda_val, sigma_val, r_f, k_factor, beta, P, V_targ
                 allocations.append(max(0, val))
 
             chart_data = pd.DataFrame({
-                "Stock Price": prices,
-                "Suggested Allocation": allocations
+                "股价": prices,
+                "建议分配比例": allocations
             })
-            st.line_chart(chart_data, x="Stock Price", y="Suggested Allocation", color="#FF4B4B")
+            st.line_chart(chart_data, x="股价", y="建议分配比例", color="#FF4B4B")
+            # CAPTION FIX for clarification
+            st.caption(f"曲线变化由 Alpha 信心系数 (Beta={beta:.2f}) 驱动，确保越接近硬底 ($V_{{hard}}$) 信心越高。")
     else:
         st.warning("请输入有效的期权价格进行计算。")
 
+    # --- Save to Portfolio Feature ---
+    if opt_price > 0 and ERP > 0:
+        st.markdown("---")
+        st.subheader("💾 保存到组合")
+
+        if st.button("➕ 保存当前配置到组合", type="primary"):
+            # 构建当前资产的数据记录
+            asset_record = {
+                'Ticker': ticker,
+                'Raw_Kelly_Pct': f_cash,
+                'ERP': ERP,
+                'L': L,
+                'k_factor': k_factor,
+                'Alpha': alpha,
+                'P': P,
+                'V_target': V_target,
+                'V_hard': V_hard,
+                'Sigma_Leaps': sigma_leaps
+            }
+
+            # 检查是否已存在同名 Ticker，如果存在则更新，否则追加
+            existing_tickers = [item['Ticker'] for item in st.session_state['portfolio_data']]
+
+            if ticker in existing_tickers:
+                # 更新现有记录
+                idx = existing_tickers.index(ticker)
+                st.session_state['portfolio_data'][idx] = asset_record
+                st.success(f"✅ 已更新 {ticker} 的组合数据")
+            else:
+                # 追加新记录
+                st.session_state['portfolio_data'].append(asset_record)
+                st.success(f"✅ 已将 {ticker} 添加到组合")
+
+            # 显示当前组合概览
+            st.info(f"当前组合共有 {len(st.session_state['portfolio_data'])} 个标的")
+
+
+# --- Page for Multi-Asset Normalization ---
+def page_multi_asset_normalization(max_leverage_cap):
+    st.title("⚖️ Step 2: 多标的组合管理 - 简单归一化")
+    st.markdown("---")
+
+    # --- USER REQUESTED CORRELATION GUIDANCE ---
+    with st.expander("❓ 组合相关性与仓位上限 (C_max) 设定指南"):
+        st.markdown("""
+        组合中资产的相关性（Correlation）是确定最终总仓位上限 $C_{max}$ 的关键因素。
+
+        **1. 高相关性资产 (例如：同板块股票或指数)**
+        * **原则:** 当资产相关性高时，风险分散效果差。建议将原始 Kelly 值进行**内部加权平均**，而非简单相加，以此平均值作为 $C_{max}$ 或略高的上限。
+        * **案例:** 如果资产A (Kelly $65\%$, 信心 $2$) 和资产B (Kelly $45\%$, 信心 $1$)，您可以考虑将最终上限 $C_{max}$ 设置为他们的**信心加权平均**：
+            $$ C_{max} \\approx \\frac{65\\% \\times 2 + 45\\% \\times 1}{2 + 1} \\approx 58.33\\% $$
+        * **操作:** 将计算出的加权平均值（例如 $0.58$）作为 $C_{max}$ 阈值输入到左侧边栏的滑块中。
+
+        **2. 低相关性资产 (例如：不同大宗商品、跨市场指数)**
+        * **原则:** 风险分散效应显著，可以允许较高的总仓位。
+        * **操作:** 可以将 $C_{max}$ 设置在 $80\%$ 到 $100\%$ 之间，让系统根据您设置的上限自动计算归一化后的仓位。
+
+        *本计算器采用简单的线性归一化方法 (Final Pct = Raw Kelly * Scale Factor)，请根据您的组合相关性设置合理的 $C_{max}$。*
+        """)
+    # ------------------------------------------
+
+    portfolio_data = st.session_state['portfolio_data']
+
+    if not portfolio_data:
+        st.warning("组合中没有资产。请回到 Step 1 计算并点击 '保存当前配置到组合'。")
+        return
+
+    df = pd.DataFrame(portfolio_data)
+
+    # 1. 计算原始总风险暴露
+    total_raw_exposure = df['Raw_Kelly_Pct'].sum()
+
+    st.markdown(f"**总资产数量:** `{len(df)}`")
+    st.markdown(f"**原始 Kelly 理论总仓位 (C_raw):** `{total_raw_exposure:.2%}`")
+    st.markdown(f"**设置的现金上限 (C_max):** `{max_leverage_cap:.2%}`")
+
+    # 2. 归一化逻辑
+    if total_raw_exposure > max_leverage_cap:
+        scale_factor = max_leverage_cap / total_raw_exposure
+        st.error(f"🚨 总仓位超限，已进行归一化缩放。缩放因子: {scale_factor:.4f}")
+    else:
+        scale_factor = 1.0
+        st.success("✅ 总仓位在限制内。无需缩放。")
+
+    # 3. 应用归一化
+    df['Final_Pct'] = df['Raw_Kelly_Pct'] * scale_factor
+
+    # 4. 格式化输出
+    df_display = df[['Ticker', 'Raw_Kelly_Pct', 'Final_Pct', 'ERP', 'L', 'Sigma_Leaps', 'k_factor', 'Alpha']].copy()
+
+    # Apply formatting
+    df_display.rename(columns={
+        'Raw_Kelly_Pct': '原始 Kelly %',
+        'Final_Pct': '最终仓位 %',
+        'ERP': '净优势 (ERP)',
+        'L': '杠杆 (L)',
+        'Sigma_Leaps': 'LEAPS波动率',
+        'Alpha': '信心 (Alpha)',
+        'k_factor': 'K 因子'
+    }, inplace=True)
+
+    # Format percentages and floats for display
+    df_display['原始 Kelly %'] = df_display['原始 Kelly %'].apply(lambda x: f"{x:.2%}")
+    df_display['最终仓位 %'] = df_display['最终仓位 %'].apply(lambda x: f"**{x:.2%}**")
+    df_display['净优势 (ERP)'] = df_display['净优势 (ERP)'].apply(lambda x: f"{x:.2%}")
+    df_display['杠杆 (L)'] = df_display['杠杆 (L)'].apply(lambda x: f"{x:.2f}x")
+    df_display['LEAPS波动率'] = df_display['LEAPS波动率'].apply(lambda x: f"{x:.2%}")
+    df_display['信心 (Alpha)'] = df_display['信心 (Alpha)'].apply(lambda x: f"{x:.3f}")
+    df_display['K 因子'] = df_display['K 因子'].apply(lambda x: f"{x:.2f}")
+
+
+    st.subheader(f"\n最终组合分配结果 (总仓位: {df['Final_Pct'].sum():.2%})")
+    st.dataframe(df_display, hide_index=True, use_container_width=True)
+
+    if st.button("清空组合数据", help="这将删除所有已保存的资产记录"):
+        st.session_state['portfolio_data'] = []
+        st.rerun()
+
 
 # ==========================================
-# 4. MAIN ROUTER (统一入口)
+# 5. MAIN ROUTER (统一入口)
 # ==========================================
 st.set_page_config(page_title="统一凯利量化工具", layout="wide", page_icon="📈")
 
 
+# --- 初始化 Session State 中的默认值 ---
+# 已根据用户要求和图片更新默认值。
+default_vals = {
+    'r_f': 0.037, 'k_factor': 0.50, 'beta': 0.20, 'P': 180.00,
+    'V_target': 225.00, 'V_hard': 130.00, 'V_fill': 145.00,
+    'iv_pricing': 0.5100, 'opt_price': 61.60, 'delta': 0.8446,
+    'theta': 0.0425, 'ticker': "NVDA", 'lambda': 6.0393,
+    'sigma': 0.6082, 'portfolio_data': [], 'window_days': 90
+}
+
+for key, default_val in default_vals.items():
+    if key not in st.session_state:
+        st.session_state[key] = default_val
+
 # --- 侧边栏统一输入 (Global Inputs) ---
 with st.sidebar:
     st.title("导航与全局参数")
+
+    # FIX 1: Change default index to 0 (Step 0)
     page = st.radio("选择工具页面",
                     ("Step 0: 市场诊断",
                      "Step 0.5: 最优期限求解",
-                     "Step 1: 主仓位计算器"),
-                    index=2) # 默认选中主计算器
+                     "Step 1: 主仓位计算器",
+                     "Step 2: 多标的组合管理"),
+                    key='page_select', index=0) # FIX: index=0
 
     st.header("1. 资产与统计数据")
-    ticker = st.text_input("股票代码 (Ticker)", value=st.session_state.get('ticker', "NVDA")).upper()
+    ticker = st.text_input("股票代码 (Ticker)", value=st.session_state.ticker, key='ticker_global').upper()
 
     # 历史数据获取/展示
     if st.button("获取历史统计数据"):
-        try:
-            with st.spinner("Calculating OU Params & Volatility..."):
-                # Use os.path.join(project_root, "pe_csv", f"{ticker}_pe.csv") inside get_ou_for_ticker
-                ou = get_ou_for_ticker(ticker, window=90)
-                st.session_state['lambda'] = ou["lambda"] * 252.0
-                sigma_dict, _, _, _ = get_sigma(
-                    [ticker], period="5y", window=252, percentile=0.85, annualize=True, safety_lock=True
-                )
-                st.session_state['sigma'] = sigma_dict.get(ticker)
-                st.session_state['ticker'] = ticker
-                st.success("Data Fetched!")
-        except Exception as e:
-            st.error(f"Error fetching data: {e}")
+        if 'get_ou_for_ticker' in globals() and 'get_sigma' in globals():
+            try:
+                with st.spinner("Calculating OU Params & Volatility..."):
+                    # 1. Get Lambda
+                    ou = get_ou_for_ticker(ticker, window=90)
+                    new_lambda = ou["lambda"] * 252.0
+
+                    # 2. Get Sigma (and data for plotting)
+                    # Use percentile=0.85 and safety_lock=True as per original strategy
+                    sigma_dict, _, _, rolling_series_dict = get_sigma(
+                        [ticker], period="5y", window=252, percentile=0.85, annualize=True, safety_lock=True
+                    )
+                    new_sigma = sigma_dict.get(ticker)
+
+                    # FIX 3: Update Session State values explicitly for inputs to reflect change
+                    st.session_state['lambda'] = new_lambda
+                    st.session_state['sigma'] = new_sigma
+                    st.session_state['ticker'] = ticker
+
+                    # Save rolling data for Step 0 plotting
+                    st.session_state['sigma_rolling_data'] = rolling_series_dict
+                    st.session_state['sigma_dict'] = sigma_dict
+
+                    # --- START OF USER REQUESTED SIDEBAR REPORT ---
+                    st.info(f"✅ 已检测到滚动窗口统计值: Lambda (λ) = **{new_lambda:.4f}**, Sigma (σ) = **{new_sigma:.4f}**")
+                    st.warning("⚠️ 请评估该值是否过于激进，确认后请手动输入到左侧边栏以应用到后续计算")
+                    # --- END OF USER REQUESTED SIDEBAR REPORT ---
+
+            except Exception as e:
+                st.error(f"Error fetching data: {e}")
+            finally:
+                # 修复 Streamlit 错误：移除对 widget key 的冗余赋值
+                # st.session_state['lambda_global'] = st.session_state['lambda'] # REMOVED
+                # st.session_state['sigma_global'] = st.session_state['sigma']   # REMOVED
+                pass
+        else:
+            st.error("依赖模块 (lambda_tools.py / sigma_tools.py) 未导入，无法获取历史数据。")
 
     # 统计参数
     st.divider()
-    lambda_val = st.number_input("年化 Lambda (λ)", value=st.session_state.get('lambda', 5.8930), format="%.4f")
-    sigma_val = st.number_input("年化 Sigma (σ)", value=st.session_state.get('sigma', 0.6082), format="%.4f")
+    # Read from session state - Streamlit will automatically handle updates here
+    lambda_val = st.number_input("年化 Lambda (λ)", value=st.session_state['lambda'], key='lambda_global', format="%.4f")
+    sigma_val = st.number_input("年化 Sigma (σ)", value=st.session_state['sigma'], key='sigma_global', format="%.4f")
 
-    st.header("2. 策略约束")
-    r_f = st.number_input("无风险利率 (r_f)", value=0.041, format="%.3f")
-    k_factor = st.slider("凯利分数 (k)", 0.1, 1.0, 0.50, 0.05)
-    beta = st.slider("估值折扣系数 (beta)", 0.0, 1.0, 0.20, 0.05)
+    # --- 动态输入区 ---
+    st.header("2. 策略与市场参数 (动态)")
 
-    # 市场估值与期权参数 (作为全局输入，避免重复输入)
-    st.header("3. 市场与合约参数")
-    P = st.number_input("当前股价 P ($)", value=st.session_state.get('P', 182.00), key='P', format="%.2f")
-    V_target = st.number_input("目标价 V ($)", value=st.session_state.get('V_target', 225.00), key='V_target', format="%.2f")
-    V_hard = st.number_input("硬底 V_hard ($)", value=st.session_state.get('V_hard', 130.00), key='V_hard', format="%.2f")
-    V_fill = st.number_input("计划补仓价 V_fill ($)", value=st.session_state.get('V_fill', 145.00), key='V_fill', format="%.2f") # Solver专用
+    # Define variables to be passed to pages later
+    current_lambda = lambda_val
+    current_sigma = sigma_val
+    current_r_f = st.session_state.r_f
+    current_k_factor = st.session_state.k_factor
+    current_beta = st.session_state.beta
+    current_P = st.session_state.P
+    current_V_target = st.session_state.V_target
+    current_V_hard = st.session_state.V_hard
+    current_V_fill = st.session_state.V_fill
+    current_iv_pricing = st.session_state.iv_pricing
+    current_opt_price = st.session_state.opt_price
+    current_delta = st.session_state.delta
+    current_theta = st.session_state.theta
 
-    st.divider()
-    opt_price = st.number_input("LEAPS Price ($)", value=st.session_state.get('opt_price', 64.63), key='opt_price', format="%.2f")
-    delta = st.number_input("Delta", value=st.session_state.get('delta', 0.8460), key='delta', format="%.4f")
-    theta = st.number_input("Daily Theta (Abs)", value=st.session_state.get('theta', 0.0432), key='theta', format="%.4f")
+    if page == "Step 0: 市场诊断":
+        st.subheader("诊断特有参数")
+        window_days = st.slider("滚动窗口 (交易日)", min_value=30, max_value=252, value=st.session_state.window_days, key='window_days_diag')
+        st.session_state['window_days'] = window_days
+        current_window_days = window_days
+
+    elif page == "Step 0.5: 最优期限求解":
+        # Strategy Constraints
+        st.subheader("2.1 策略约束")
+        current_r_f = st.number_input("无风险利率 (r_f)", value=st.session_state.r_f, key='r_f_solver', format="%.3f")
+
+        st.subheader("2.2 市场与定价参数")
+        current_P = st.number_input("当前股价 P ($)", value=st.session_state.P, key='P_solver', format="%.2f")
+        current_V_target = st.number_input("目标价 V ($)", value=st.session_state.V_target, key='V_target_solver', format="%.2f")
+        current_V_hard = st.number_input("硬底 V_hard ($)", value=st.session_state.V_hard, key='V_hard_solver', format="%.2f")
+        current_V_fill = st.number_input("计划补仓价 V_fill ($)", value=st.session_state.V_fill, key='V_fill_solver', format="%.2f")
+        current_iv_pricing = st.number_input("期权定价波动率 (IV)", value=st.session_state.iv_pricing, key='iv_pricing_solver', format="%.4f")
+
+        # Update Session State
+        st.session_state.r_f = current_r_f
+        st.session_state.P = current_P
+        st.session_state.V_target = current_V_target
+        st.session_state.V_hard = current_V_hard
+        st.session_state.V_fill = current_V_fill
+        st.session_state.iv_pricing = current_iv_pricing
+
+    elif page == "Step 1: 主仓位计算器":
+        # Strategy Constraints
+        st.subheader("2.1 策略约束")
+        current_r_f = st.number_input("无风险利率 (r_f)", value=st.session_state.r_f, key='r_f_dash', format="%.3f")
+        current_k_factor = st.slider("凯利分数 (k)", 0.1, 1.0, st.session_state.k_factor, 0.05, key='k_dash')
+        current_beta = st.slider("估值折扣系数 (beta)", 0.0, 1.0, st.session_state.beta, 0.05, key='beta_dash')
+
+        st.subheader("2.2 市场与合约参数")
+        current_P = st.number_input("当前股价 P ($)", value=st.session_state.P, key='P_dash', format="%.2f")
+        current_V_target = st.number_input("目标价 V ($)", value=st.session_state.V_target, key='V_target_dash', format="%.2f")
+        current_V_hard = st.number_input("硬底 V_hard ($)", value=st.session_state.V_hard, key='V_hard_dash', format="%.2f")
+
+        st.divider()
+        current_opt_price = st.number_input("LEAPS Price ($)", value=st.session_state.opt_price, key='opt_price_dash', format="%.2f")
+        current_delta = st.number_input("Delta", value=st.session_state.delta, key='delta_dash', format="%.4f")
+        current_theta = st.number_input("Daily Theta (Abs)", value=st.session_state.theta, key='theta_dash', format="%.4f")
+
+        # Update Session State
+        st.session_state.r_f = current_r_f
+        st.session_state.k_factor = current_k_factor
+        st.session_state.beta = current_beta
+        st.session_state.P = current_P
+        st.session_state.V_target = current_V_target
+        st.session_state.V_hard = current_V_hard
+        st.session_state.opt_price = current_opt_price
+        st.session_state.delta = current_delta
+        st.session_state.theta = current_theta
+
+    elif page == "Step 2: 多标的组合管理":
+        st.subheader("2.1 组合约束")
+        max_leverage_cap = st.slider("总仓位上限 (C_max)", 0.5, 2.0, 1.0, 0.05, key='c_max_slider', help="控制总现金分配不超过 C_max * 100%")
+        st.info("数据来源于 Step 1 中点击 '保存到组合' 的记录。")
+        current_max_cap = max_leverage_cap
 
 
-
-# --- 页面路由 ---
+# --- Page Routing ---
 if page == "Step 0: 市场诊断":
-    # 诊断页不需要期权数据
-    page_diagnosis(ticker, 90)
+    page_diagnosis(ticker, current_window_days)
 
 elif page == "Step 0.5: 最优期限求解":
-    if V_target <= V_hard:
+    if current_V_target <= current_V_hard:
         st.error("错误: 目标价必须高于硬底。")
-    elif lambda_val is None or sigma_val is None:
-         st.error("请先在侧边栏获取 Lambda/Sigma 统计数据。")
+    elif current_lambda is None or current_sigma is None:
+        st.error("请先在侧边栏获取 Lambda/Sigma 统计数据。")
     else:
-        # Note: IV_PRICING is usually close to Sigma_ASSET for long-term options
-        page_solver(P, V_target, V_hard, V_fill, lambda_val, sigma_val, sigma_val, r_f, ticker)
+        page_solver(current_P, current_V_target, current_V_hard, current_V_fill, current_lambda, current_sigma, current_iv_pricing, current_r_f, ticker)
 
 elif page == "Step 1: 主仓位计算器":
-    if lambda_val is None or sigma_val is None:
+    if current_lambda is None or current_sigma is None:
         st.error("请先在侧边栏获取 Lambda/Sigma 统计数据。")
-    elif opt_price <= 0 or delta <= 0:
+    elif current_opt_price <= 0 or current_delta <= 0:
         st.warning("请在侧边栏输入有效的期权合约数据。")
     else:
-        page_dashboard(ticker, lambda_val, sigma_val, r_f, k_factor, beta, P, V_target, V_hard, opt_price, delta, theta)
+        page_dashboard(ticker, current_lambda, current_sigma, current_r_f, current_k_factor, current_beta, current_P, current_V_target, current_V_hard, current_opt_price, current_delta, current_theta)
+
+elif page == "Step 2: 多标的组合管理":
+    max_leverage_cap = st.session_state.get('c_max_slider', 1.0)
+    page_multi_asset_normalization(max_leverage_cap)

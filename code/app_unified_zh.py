@@ -45,7 +45,7 @@ def configure_chinese_font():
     project_root = os.path.dirname(current_dir) # Go back to project_root
 
     # Modify this to your specific font file name
-    font_file_name = 'simsunb.ttf'
+    font_file_name = 'SimsunExtG.ttf'
     font_path = os.path.join(project_root, "fonts", font_file_name)
 
     # 2. Fallback check

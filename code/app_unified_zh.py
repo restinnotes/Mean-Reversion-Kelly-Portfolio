@@ -115,29 +115,78 @@ def analyze_probabilities(paths, target_pe, current_pe):
 # ==========================================
 # 4. PAGE LOGIC FUNCTIONS
 # ==========================================
+def analyze_risk_reward(paths, current_pe, days_map):
+    """
+    计算 Hold (持有到底) 和 Touch (触碰高点) 的风险收益分布
+    """
+    results = []
+    max_sim_days = paths.shape[0] - 1
 
-# --- Page 1: Diagnosis (Rolling Analysis) ---
+    for label, day in days_map.items():
+        if day > max_sim_days: continue
+
+        # --- A. HOLD 逻辑 (持有到底) ---
+        final_values = paths[day]
+        # 1. 亏损概率
+        prob_loss = np.mean(final_values < current_pe)
+        # 2. 10% 底线 (Worst Case)
+        worst_10_val = np.percentile(final_values, 10)
+        worst_10_pnl = (worst_10_val - current_pe) / current_pe
+        # 3. 预期收益
+        expected_val = np.mean(final_values)
+        expected_pnl = (expected_val - current_pe) / current_pe
+
+        # --- B. TOUCH 逻辑 (触碰高点) ---
+        # 路径切片: [0..day]
+        path_slice = paths[:day+1, :]
+        # 每条路径在期间的最高点
+        max_values = np.max(path_slice, axis=0)
+        # 4. 10% 高点 (Best Case / Lucky Case)
+        lucky_10_val = np.percentile(max_values, 90)
+        lucky_10_pnl = (lucky_10_val - current_pe) / current_pe
+
+        results.append({
+            "时间窗口": label,
+            "亏损概率 (Loss%)": prob_loss,
+            "10%底线 (Hold)": worst_10_pnl,
+            "预期收益 (Exp)": expected_pnl,
+            "10%高点 (Touch)": lucky_10_pnl
+        })
+
+    return pd.DataFrame(results)
+# ---------------------------------------------------------
+# 请用此完整函数替换 code/app_unified_zh.py 中的 page_diagnosis
+# ---------------------------------------------------------
+
+# ---------------------------------------------------------
+# 请用此【逻辑重构版】替换 code/app_unified_zh.py 中的 page_diagnosis
+# ---------------------------------------------------------
+
 def page_diagnosis(ticker, window_days):
-    st.title("📈 Step 0: 市场诊断 - 滚动分析")
+    st.title("📈 Step 0: 市场诊断 - 估值与分布")
     st.subheader(f"资产: {ticker} | 滚动窗口: {window_days} 交易日")
     st.markdown("---")
 
-    # --- User Guide ---
-    with st.expander("❓ Step 0：市场诊断指引 (验证均值回归)"):
+    # --- User Guide: 融合了原版的参数警示与新版的分布思维 ---
+    with st.expander("❓ Step 0 核心逻辑：先验证参数，再推演未来", expanded=True):
         st.markdown("""
-            这是**风险控制的第一步**，用于验证均值回归假设是否成立，以及评估回归动力 ($\lambda$) 的可靠性。
-            **核心目标：**
-            1.  **判断低估是否真实：** 查看 PE Ratio 曲线是否明显低于滚动均线，确认存在回归空间。
-            2.  **评估 $\lambda$ 质量：** 检查 Lambda 曲线最右端的值是否远高于其历史平均水平（虚高）。如果是，后续 Step 1 中应**手动调低 $\lambda$**。
-            3.  **确认时间可行性：** 检查 Monte Carlo 模拟，确认 90% 概率触摸目标所需的最短时间，以此作为 **LEAPS 选品的期限底线**。
+            **在使用任何模型前，必须完成以下两步逻辑闭环：**
+
+            **第一步：参数验证 (Diagnosis)**
+            * **Lambda (回归动力)**：衡量股价向目标回归的速度。关键原则是 **宁低勿高**：Lambda 越低，模型越保守，不会过度认为股价会快速回归，从而避免仓位过重。即便当前 Lambda 不在历史高位，也建议根据风险偏好适当调低，以保持充足安全边际。
+            * **Sigma (波动率)**：确认我们使用的是稳健的波动率（通常是历史 85% 分位数），确保在计算风险时足够保守。
+
+            **第二步：分布推演 (Simulation)**
+            * **假设前提**：*“如果估值回归真的按照上述历史规律运行...”*
+            * **盈亏分布**：看清楚 **10%底线 (Hold Risk)** 和 **10%高点 (Touch Gain)**。
+            * **决策**：只有当 Lambda 真实可靠，且蒙特卡洛推演出的“底线风险”你能承受时，才能进入 Step 1 开仓。
         """)
     st.markdown("---")
-    # ----------------------------
 
-    # --- Data Loading uses the consistent project_root ---
+    # --- Data Loading ---
     pe_csv_path = os.path.join(project_root, "pe_csv", f"{ticker}_pe.csv")
     if not os.path.exists(pe_csv_path):
-        st.warning(f"警告: 找不到 {ticker}_pe.csv 文件进行滚动分析。请确保数据位于: {os.path.basename(project_root)}/pe_csv/")
+        st.warning(f"警告: 找不到 {ticker}_pe.csv 文件。")
         return
 
     try:
@@ -149,13 +198,12 @@ def page_diagnosis(ticker, window_days):
 
     # --- 1. Calculate Rolling Metrics ---
     if len(df) < window_days:
-        st.warning("数据不足，无法进行滚动指标计算。")
+        st.warning("数据不足。")
         return
 
     df['rolling_mean'] = df['value'].rolling(window=window_days).mean()
 
     dates_hist = []; lambdas_annual_hist = []; half_lives_hist = []; sigmas_daily_hist = []
-
     start_index = window_days - 1
 
     if 'calculate_ou_params' in globals():
@@ -171,12 +219,11 @@ def page_diagnosis(ticker, window_days):
             except Exception:
                 continue
     else:
-        st.error("依赖模块 (lambda_tools.py) 未导入，无法进行 OU 参数滚动计算。")
+        st.error("依赖模块 (lambda_tools.py) 未导入。")
         return
 
-
     if not lambdas_annual_hist:
-        st.warning("数据不足，无法进行滚动指标计算。")
+        st.warning("数据不足，无法计算指标。")
         return
 
     current_lambda = lambdas_annual_hist[-1]
@@ -185,253 +232,298 @@ def page_diagnosis(ticker, window_days):
     current_mean = df['rolling_mean'].iloc[-1]
     current_sigma_daily = sigmas_daily_hist[-1]
 
+    # 将 Lambda 存入 Session 供后续使用
     if st.session_state.ticker == ticker:
         st.session_state['lambda'] = current_lambda
 
-    # --- 2. Diagnosis Report ---
-    st.subheader("诊断报告与 Monte Carlo 模拟")
-    st.markdown("---")
+    # =========================================================
+    # Part 1: 参数验证与历史回溯 (The Gatekeeper)
+    # 这一部分必须放在前面，作为“体检报告”
+    # =========================================================
+    st.subheader("1. 核心参数验证 (Diagnosis)")
+
     col_d1, col_d2 = st.columns(2)
-
     with col_d1:
-        st.markdown("**PE 估值状态**")
+        st.markdown("**估值偏离度**")
         st.code(f"当前 PE: {current_pe:.2f}")
-        st.code(f"{window_days}日均值: {current_mean:.2f}")
-
+        st.code(f"均值 PE: {current_mean:.2f}")
     with col_d2:
-        st.markdown("**回归与波动率**")
-        st.code(f"年化 Lambda (λ): {current_lambda:.4f}")
-        st.code(f"半衰期: {current_hl:.2f} 天")
-        st.code(f"日波动率 (σ_PE): {current_sigma_daily:.4f}")
+        st.markdown("**回归动力 (Lambda)**")
+        st.code(f"当前 Lambda: {current_lambda:.4f}")
+        st.code(f"半衰期: {current_hl:.1f} 天")
 
-    st.markdown("---")
-
-    # ------------------------------------------
-
-    # --- 3. Monte Carlo Simulation ---
-    st.markdown("##### Monte Carlo 模拟结果")
-    st.caption(f"目标: PE {current_pe:.2f} 修复到均值 PE {current_mean:.2f} | 模拟路径: 10,000条")
-
-    paths = run_simulation(current_pe, current_mean, current_lambda, current_sigma_daily)
-    df_probs = analyze_probabilities(paths, current_mean, current_pe)
-
-    safe_days = 0
-    safe_cal_days = 0
-    found_safe_zone = False
-
-    for idx, row in df_probs.iterrows():
-        if row['触摸目标概率'] > 0.9:
-            safe_days = int(row['交易日'])
-            safe_cal_days = int(row['~日历日'].replace('d',''))
-            found_safe_zone = True
-            break
-
-    df_probs['触摸目标概率'] = df_probs['触摸目标概率'].apply(lambda x: f"{x:.1%}")
-    df_probs['结束时保持概率'] = df_probs['结束时保持概率'].apply(lambda x: f"{x:.1%}")
-    df_probs['预期PE'] = df_probs['预期PE'].apply(lambda x: f"{x:.2f}")
-    st.dataframe(df_probs, hide_index=True)
-
-    if found_safe_zone:
-        st.success(f"**[推荐行动计划]**: 90% 概率触摸目标所需的最短时间为 **{safe_days} 交易日 (~{safe_cal_days} 日历日)**。")
-        st.info(f"选品建议：购买到期日 **大于等于** {safe_cal_days} 日历日的 LEAPS 期权。")
-    else:
-        st.warning(f"**[警告]**: 在 1 年内无法达到 90% 的目标触摸概率。回归缓慢/不确定。建议购买 > 1 年的 LEAPS 或保持现金。")
-
-    st.markdown("---")
-
-    # --- 4. Plotting ---
+    # --- 历史图表 (Visual Verification) ---
+    # Plot 1: PE Context
     plot_df = df.iloc[start_index:].copy()
     plot_df['Lambda'] = lambdas_annual_hist
     plot_df['Half_Life'] = half_lives_hist
     plot_df.set_index('date', inplace=True)
 
-    lambda_80 = np.percentile(lambdas_annual_hist, 80)
-    lambda_20 = np.percentile(lambdas_annual_hist, 20)
-    hl_90 = np.percentile(half_lives_hist, 90)
-
-    # Plot 1: PE Context
     fig1, ax0 = plt.subplots(figsize=(10, 3))
-    ax0.plot(plot_df.index, plot_df['value'], 'k', alpha=0.8, label='市盈率')
-    ax0.plot(plot_df.index, plot_df['rolling_mean'], 'b--', label=f'{window_days}日滚动均值')
-    ax0.set_title(f'{ticker} 市盈率与 {window_days}日滚动均值 (估值偏离度)', fontsize=10)
-    ax0.set_xlabel("日期")
-    ax0.set_ylabel("市盈率")
+    ax0.plot(plot_df.index, plot_df['value'], 'k', alpha=0.8, label='PE')
+    ax0.plot(plot_df.index, plot_df['rolling_mean'], 'b--', label=f'{window_days}日均线')
+    ax0.set_title(f'{ticker} 估值偏离度 (验证: 低估是否真实？)', fontsize=10)
     ax0.legend(loc='upper left'); ax0.grid(True, alpha=0.3)
     st.pyplot(fig1)
     plt.close(fig1)
 
-    # Plot 2: Lambda
+    # Plot 2: Lambda History (Critical Check)
+    lambda_80 = np.percentile(lambdas_annual_hist, 80)
+
     fig2, ax1 = plt.subplots(figsize=(10, 3))
-    ax1.plot(plot_df.index, plot_df['Lambda'], color='#1f77b4', label='年化 Lambda')
+    ax1.plot(plot_df.index, plot_df['Lambda'], color='#1f77b4', label='Lambda')
     ax1.axhline(lambda_80, color='r', linestyle='--', label=f'80%分位 ({lambda_80:.1f})')
-    ax1.axhline(lambda_20, color='g', linestyle='--', label=f'20%分位 ({lambda_20:.1f})')
-    ax1.set_title('均值回归速度 (Lambda)', fontsize=10)
-    ax1.set_xlabel("日期")
-    ax1.set_ylabel("Lambda (年化)")
+    ax1.set_title('Lambda 历史走势 (验证: 是否处于不可持续的极高位？)', fontsize=10)
     ax1.legend(loc='upper left'); ax1.grid(True, alpha=0.3)
     st.pyplot(fig2)
     plt.close(fig2)
 
-    # Plot 3: Half-Life
-    fig3, ax2 = plt.subplots(figsize=(10, 3))
-    ax2.plot(plot_df.index, plot_df['Half_Life'], color='#ff7f0e', label='半衰期 (交易日)')
-    ax2.axhline(hl_90, color='purple', linestyle='--', label=f'90%分位风险 ({hl_90:.1f}日)')
-    ax2.set_ylim(0, max(300, hl_90 * 1.5))
-    ax2.set_title('隐含半衰期 (风险指标)', fontsize=10)
-    ax2.set_xlabel("日期")
-    ax2.set_ylabel("半衰期 (交易日)")
-    ax2.legend(loc='upper left'); ax2.grid(True, alpha=0.3)
-    st.pyplot(fig3)
-    plt.close(fig3)
-
-    # --- 5. Sigma Plot (Added) ---
-    st.markdown("---")
-    st.subheader("历史波动率诊断 (Sigma Tools)")
-
+    # Plot 3: Sigma (Volatility Check)
+    st.markdown("**波动率验证 (Sigma Check)**")
     if st.session_state.get('sigma_rolling_data') and ticker in st.session_state.sigma_rolling_data:
         roll_vol = st.session_state.sigma_rolling_data[ticker]
         sigma_val = st.session_state.sigma_dict[ticker]
-        window = 252
-        percentile = 0.85
 
-        if isinstance(roll_vol.index, pd.DatetimeIndex):
-            index_for_plot = roll_vol.index
-        else:
-            index_for_plot = roll_vol.index.values
+        fig4, ax3 = plt.subplots(figsize=(10, 3))
+        # 简单绘制即可，核心是确认当前使用的 Sigma 足够稳健
+        if isinstance(roll_vol.index, pd.DatetimeIndex): idx_plot = roll_vol.index
+        else: idx_plot = roll_vol.index.values
 
-        if not roll_vol.empty:
-            current = roll_vol.iloc[-1]
-            pval = roll_vol.quantile(percentile)
-
-            fig4, ax3 = plt.subplots(figsize=(10, 4))
-
-            ax3.plot(index_for_plot, roll_vol.values, linewidth=1.4, label=f'{window}日滚动年化波动率')
-            ax3.axhline(pval, linestyle='--', linewidth=1.5, color='orange', label=f'{percentile*100:.0f}%分位 = {pval:.2%}')
-
-            final_sigma = max(current, pval)
-            ax3.axhline(final_sigma, linestyle='-', linewidth=1.5, color='green', label=f'最终稳健 Sigma = {final_sigma:.2%}')
-
-            ax3.scatter(index_for_plot[-1], current, color='red', s=50, zorder=5, label=f'当前波动率 = {current:.2%}')
-
-
-            ax3.set_title(f"{ticker} 滚动年化波动率 ({window}日) — 稳健 Sigma", fontsize=10)
-            ax3.set_xlabel("日期")
-            ax3.set_ylabel("年化波动率")
-            ax3.yaxis.set_major_formatter(mtick.PercentFormatter(1.0))
-            ax3.legend(loc='upper left')
-            ax3.grid(alpha=0.3)
-            plt.tight_layout()
-            st.pyplot(fig4)
-            plt.close(fig4)
-        else:
-            st.warning("无足够的历史数据来绘制滚动波动率图表。")
+        ax3.plot(idx_plot, roll_vol.values, color='gray', alpha=0.6, label='滚动波动率')
+        ax3.axhline(sigma_val, color='green', linewidth=2, label=f'当前采用 Sigma ({sigma_val:.1%})')
+        ax3.set_title(f'波动率验证 (当前采用值是否覆盖了历史大部分风险？)', fontsize=10)
+        ax3.legend(loc='upper left'); ax3.grid(True, alpha=0.3)
+        ax3.yaxis.set_major_formatter(mtick.PercentFormatter(1.0))
+        st.pyplot(fig4)
+        plt.close(fig4)
     else:
-        st.warning("请在侧边栏点击 '获取历史统计数据' 以加载波动率历史数据。")
+        st.info("请在左侧点击 '获取历史统计数据' 以查看波动率图表。")
 
+    st.markdown("---")
+
+    # =========================================================
+    # Part 2: 未来推演 (The Crystal Ball)
+    # 这一部分放在后面，作为基于上述参数的推演结果
+    # =========================================================
+    st.subheader("2. 盈亏分布推演 (Simulation)")
+    st.caption(f"👉 **前提假设**：如果估值回归真的遵循上述 Lambda={current_lambda:.2f} 的历史规律，那么正态分布下的结局是：")
+
+    # 定义关键时间窗口
+    check_points_map = {
+        "1个月 (21交易日)": 21,
+        "3个月 (63交易日)": 63,
+        "6个月 (126交易日)": 126,
+        "9个月 (189交易日)": 189
+    }
+
+    # 运行模拟
+    paths = run_simulation(current_pe, current_mean, current_lambda, current_sigma_daily, days_to_simulate=200)
+
+    # 分析分布
+    df_risk = analyze_risk_reward(paths, current_pe, check_points_map)
+
+    # 输出表格
+    st.dataframe(
+        df_risk.style.format({
+            "亏损概率 (Loss%)": "{:.1%}",
+            "10%底线 (Hold)": "{:+.2%}",
+            "预期收益 (Exp)": "{:+.2%}",
+            "10%高点 (Touch)": "{:+.2%}"
+        }).applymap(lambda v: 'color: #ff4b4b' if v < 0 else 'color: #2dc937',
+                    subset=["10%底线 (Hold)", "预期收益 (Exp)", "10%高点 (Touch)"]),
+        hide_index=True,
+        use_container_width=True
+    )
+
+
+
+    # 模拟路径分布图
+    fig_mc, ax_mc = plt.subplots(figsize=(10, 4))
+    percentiles = [10, 50, 90]
+    colors = ['#ff4b4b', '#1f77b4', '#2dc937']
+    labels = ['10% 底线 (Hold)', '50% 中位数', '90% 高点 (Touch)']
+    days = np.arange(paths.shape[0])
+
+    for p, c, l in zip(percentiles, colors, labels):
+        line_data = np.percentile(paths, p, axis=1)
+        ax_mc.plot(days, line_data, color=c, lw=2, label=l)
+
+    ax_mc.axhline(current_pe, color='gray', linestyle=':', label='当前价')
+    ax_mc.set_title(f"{ticker} 未来价格路径分布锥")
+    ax_mc.set_xlabel("交易日")
+    ax_mc.set_ylabel("PE Ratio")
+    ax_mc.legend(loc='upper left', fontsize=8)
+    ax_mc.grid(True, alpha=0.3)
+
+    st.pyplot(fig_mc)
+    plt.close(fig_mc)
 
 # --- Page 2: Optimal Expiry Solver ---
+# ---------------------------------------------------------
+# 请复制以下代码，替换 code/app_unified_zh.py 中的 page_solver 函数
+# ---------------------------------------------------------
+
 def page_solver(P_CURRENT, V_TARGET, V_HARD_FLOOR, V_FILL_PLAN, LAMBDA, SIGMA_ASSET, IV_PRICING, R_RISKFREE, ticker, K_FACTOR, BETA):
-    st.title("🎯 Step 0.5: 最优期限求解器")
-    st.subheader(f"资产: {ticker} | P={P_CURRENT}")
+    st.title("🎯 Step 0.5: 最优期限求解 (动态 K 值版)")
+    st.subheader(f"资产: {ticker} | 目标: 在 {V_FILL_PLAN} 时打满子弹")
     st.markdown("---")
 
-    # --- User Guide ---
-    with st.expander("❓ Step 0.5：求解器原理与下一步行动"):
-        st.markdown("""
-            求解器旨在找到一个**攻守平衡点**：即在满足凯利增长速度要求的同时，预留出在计划补仓价 ($V_{fill}$) 进行 **1:1 补仓的充足现金**。
-            * **进攻曲线 (Offense)**：基于 Kelly 理论，期限越长，波动率惩罚越低，建议仓位越高。**注意：进攻曲线使用当前设定的 k 值（例如 0.5）来计算初始仓位。**
-            * **防守上限 (Defense)**：基于补仓现金约束，期限越长，期权越贵，可用的初始仓位越低。
-            两条曲线的**交点即为最优期限 (Sweet Spot)**。
+    # --- 1. 策略配置区 (新增) ---
+    with st.expander("❓ 什么是“动态 K 值”求解？", expanded=True):
+        st.markdown(f"""
+            **核心思想**：
+            通常我们在建仓时比较谨慎（使用较小的 $k$，如 0.5），但随着股价下跌，安全边际变大，我们的信心会增强（使用较大的 $k$，如 1.0）。
+
+            **本工具的目标**：
+            寻找一张合约，使得：
+            1.  **现在 ($P={P_CURRENT}$)**：应用 **起始 K={K_FACTOR}** 时，仓位适中。
+            2.  **到底 ($P={V_FILL_PLAN}$)**：应用 **最终 K=Target_K** 时，建议仓位 **恰好为 100%**。
+
+            这样你就能设计出一个“越跌越买，到底正好满仓”的完美加仓路径。
         """)
+
+    # 新增：目标 K 值输入
+    col_k1, col_k2 = st.columns(2)
+    with col_k1:
+        # 显示当前的起始 K (从左侧边栏继承)
+        st.metric("起始 K 值 (Start)", f"{K_FACTOR:.2f}", help="当前左侧边栏设定的 K 值")
+    with col_k2:
+        # 允许用户设定补仓时的 K
+        k_fill_target = st.number_input("满仓 K 值 (Target at Fill)",
+                                      min_value=K_FACTOR, max_value=2.0, value=1.0, step=0.1,
+                                      help="当股价跌到 V_fill 时，你愿意使用多大的 K 值？通常设为 1.0 (全凯利)。")
+
     st.markdown("---")
-    # ----------------------------
 
     if 'bs_greek_calculator' not in globals() or 'calculate_single_asset_kelly_ratio' not in globals():
         st.error("依赖模块 (optimal_expiry_solver.py) 未导入，无法进行求解。")
         return
 
+    # 检查输入合理性
+    if V_FILL_PLAN >= P_CURRENT:
+        st.error(f"错误：补仓价 V_fill ({V_FILL_PLAN}) 必须低于当前价格 ({P_CURRENT})。")
+        return
+
     results = []
-    for days in range(30, 1100, 7):
+
+    # --- 2. 求解循环 ---
+    # 我们遍历期限，寻找那张能在 V_fill 配合 k_fill_target 达到 100% 的合约
+
+    for days in range(60, 1100, 7):
         T = days / 365.0
+
+        # A. 计算【当前】状态 (P_CURRENT, k=K_FACTOR)
         c_price, c_delta, c_theta_annual = bs_greek_calculator(P_CURRENT, V_HARD_FLOOR, T, R_RISKFREE, IV_PRICING)
 
-        # Calculates full Kelly (k=1.0) ratio first
-        kelly_full = calculate_single_asset_kelly_ratio(
+        kelly_full_now = calculate_single_asset_kelly_ratio(
             P_CURRENT, c_price, c_delta, c_theta_annual, V_TARGET, V_HARD_FLOOR, LAMBDA, SIGMA_ASSET, R_RISKFREE, beta=BETA
         )
-        # Apply the user's k-factor (e.g., 0.5) for the initial target allocation
-        kelly_target = kelly_full * K_FACTOR
+        kelly_alloc_now = kelly_full_now * K_FACTOR  # Apply Start K
 
-        c0, _, _ = bs_greek_calculator(P_CURRENT, V_HARD_FLOOR, T, R_RISKFREE, IV_PRICING)
-        c_fill, _, _ = bs_greek_calculator(V_FILL_PLAN, V_HARD_FLOOR, T, R_RISKFREE, IV_PRICING)
-        # Cap limit is the available space for the initial position given the fill budget
-        cap_limit = c0 / (c0 + c_fill) if c0 + c_fill > 0 else 0.0
+        # B. 计算【补仓】状态 (V_FILL_PLAN, k=k_fill_target)
+        # 假设：忽略时间损耗（考察即时弹性）
+        c_fill_price, c_fill_delta, c_fill_theta_fill = bs_greek_calculator(V_FILL_PLAN, V_HARD_FLOOR, T, R_RISKFREE, IV_PRICING)
+
+        kelly_full_at_fill = calculate_single_asset_kelly_ratio(
+            V_FILL_PLAN, c_fill_price, c_fill_delta, c_fill_theta_fill,
+            V_TARGET, V_HARD_FLOOR, LAMBDA, SIGMA_ASSET, R_RISKFREE, beta=BETA
+        )
+        kelly_alloc_at_fill = kelly_full_at_fill * k_fill_target # Apply Target K (关键变化点)
+
+        # C. 记录结果
+        # 目标：kelly_alloc_at_fill == 1.0
+        diff = abs(kelly_alloc_at_fill - 1.0)
 
         results.append({
             "Days": days,
-            "Option_Price": c_price,
-            "Kelly_Target": kelly_target,
-            "Pilot_Cap": cap_limit,
-            "Diff": kelly_target - cap_limit
+            "Kelly_Now": kelly_alloc_now,
+            "Kelly_At_Fill": kelly_alloc_at_fill,
+            "Diff_From_100": diff,
+            "Price_Now": c_price
         })
 
     df = pd.DataFrame(results)
 
     if df.empty:
-        st.warning("未找到有效数据进行求解。请检查输入参数。")
+        st.warning("无法计算。请检查参数。")
         return
 
-    best_idx = df['Diff'].abs().idxmin()
+    # --- 3. 寻找最优解 ---
+    best_idx = df['Diff_From_100'].idxmin()
     best_row = df.loc[best_idx]
 
-    st.success("✅ 最优期限计算完成。")
+    if best_row['Diff_From_100'] > 0.1:
+        st.warning(f"⚠️ 未找到完美匹配。最接近的合约在满仓时仓位为 {best_row['Kelly_At_Fill']:.2%}。")
+    else:
+        st.success(f"✅ 找到完美合约！期限 **{int(best_row['Days'])} 天**。")
 
-    col_r1, col_r2, col_r3 = st.columns(3)
-    with col_r1:
-        st.metric("最优期限", f"{int(best_row['Days'])} 天", f"~{best_row['Days']/30.4:.1f} 月")
-    with col_r2:
-        st.metric("建议分配比例 (Cap)", f"{best_row['Pilot_Cap']:.2%}")
-    with col_r3:
-        st.metric("期权价格 (BS 估值)", f"${best_row['Option_Price']:.2f}")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("推荐合约期限", f"{int(best_row['Days'])} 天", f"~{best_row['Days']/30.4:.1f} 月")
+    with col2:
+        st.metric("当前建仓 (Start K)", f"{best_row['Kelly_Now']:.2%}", f"k={K_FACTOR}")
+    with col3:
+        st.metric("触底仓位 (Target K)", f"{best_row['Kelly_At_Fill']:.2%}", f"k={k_fill_target}")
 
-    # --- Plotting ---
+    # --- 4. 动态路径推演 (Dynamic K Simulation) ---
     st.markdown("---")
-    st.markdown("##### 攻守平衡曲线图")
-    st.caption("最优解为进攻曲线 (Target Kelly) 与防守上限 (Pilot Cash Cap) 的交点。")
+    st.subheader("📉 动态 K 值加仓路径推演")
+    st.caption(f"模拟：股价下跌，K 值从 {K_FACTOR} 线性增加至 {k_fill_target}。")
 
-    fig, ax = plt.subplots(figsize=(10, 6))
+    sim_prices = np.linspace(P_CURRENT, V_FILL_PLAN, 50)
+    sim_allocations = []
+    sim_ks = []
 
-    ax.plot(df['Days'], df['Kelly_Target'], label=f'进攻曲线: K={K_FACTOR:.2f} Kelly 比例',
-             color='blue', linewidth=2, linestyle='--')
+    T_best = best_row['Days'] / 365.0
 
-    ax.plot(df['Days'], df['Pilot_Cap'], label='防守上限: 初始补仓容量 (1:1)',
-             color='red', linewidth=2)
+    for p in sim_prices:
+        # 1. 动态计算当前的 K 值 (线性插值)
+        # progress: 0.0 (Top) -> 1.0 (Bottom)
+        progress = (P_CURRENT - p) / (P_CURRENT - V_FILL_PLAN)
+        k_dynamic = K_FACTOR + (k_fill_target - K_FACTOR) * progress
 
-    ax.scatter(best_row['Days'], best_row['Pilot_Cap'], color='green', s=150, zorder=5, label='最优期限点')
+        # 2. 计算期权和凯利
+        c, d, t_val = bs_greek_calculator(p, V_HARD_FLOOR, T_best, R_RISKFREE, IV_PRICING)
+        k_ratio_raw = calculate_single_asset_kelly_ratio(
+            p, c, d, t_val, V_TARGET, V_HARD_FLOOR, LAMBDA, SIGMA_ASSET, R_RISKFREE, beta=BETA
+        )
 
-    ax.annotate(
-        f"最优平衡点\n{int(best_row['Days'])} 天\n{best_row['Pilot_Cap']:.1%} 仓位",
-        xy=(best_row['Days'], best_row['Pilot_Cap']),
-        xytext=(best_row['Days']+100, best_row['Pilot_Cap']+0.1),
-        arrowprops=dict(facecolor='black', shrink=0.05),
-        fontsize=10, fontweight='bold'
-    )
+        final_alloc = k_ratio_raw * k_dynamic
+        sim_allocations.append(final_alloc)
+        sim_ks.append(k_dynamic)
 
-    ax.set_title(f"最优期限求解器: {ticker}", fontsize=14)
-    ax.set_xlabel("距离到期日 (天)", fontsize=12)
-    ax.set_ylabel("头寸分配百分比", fontsize=12)
+    # 绘图
+    fig, ax1 = plt.subplots(figsize=(10, 5))
 
-    ax.legend(fontsize=12, loc='best')
-    ax.grid(True, alpha=0.3)
-    plt.tight_layout()
+    # 左轴：仓位
+    ax1.plot(sim_prices, sim_allocations, color='#1f77b4', linewidth=3, label='建议仓位 %')
+    ax1.set_xlabel("股价 (模拟下跌)", fontsize=12)
+    ax1.set_ylabel("建议仓位", color='#1f77b4', fontsize=12)
+    ax1.tick_params(axis='y', labelcolor='#1f77b4')
+    ax1.yaxis.set_major_formatter(mtick.PercentFormatter(1.0))
+    ax1.axhline(1.0, color='red', linestyle='--', alpha=0.5, label='100% 满仓线')
+    ax1.invert_xaxis() # 从高到低
+
+    # 右轴：K值
+    ax2 = ax1.twinx()
+    ax2.plot(sim_prices, sim_ks, color='gray', linestyle=':', label='动态 K 值')
+    ax2.set_ylabel("K Factor (信心)", color='gray', fontsize=12)
+    ax2.set_ylim(0, 2.0)
+
+    # 标记
+    ax1.scatter(P_CURRENT, best_row['Kelly_Now'], color='green', s=100, zorder=5)
+    ax1.scatter(V_FILL_PLAN, best_row['Kelly_At_Fill'], color='red', s=100, zorder=5)
+
+    plt.title(f"加仓路径: 价格下跌 {P_CURRENT}->{V_FILL_PLAN} | 信心增强 k={K_FACTOR}->{k_fill_target}", fontsize=12)
+    fig.tight_layout()
     st.pyplot(fig)
     plt.close(fig)
 
-    # --- Next Step Warning ---
-    st.markdown("---")
-    st.warning(f"""
-        ⚠️ **下一步行动 (关键)**：请将最优期限对应的 **真实期权合约价格**、**Delta** 和 **Theta 绝对值**，
-        作为 **Step 1** 主仓位计算器的最终输入，进行精确的仓位测算。
+    st.info(f"""
+        **图表解读**：
+        * **蓝色实线**：你应该持有的总仓位。它现在的斜率更陡峭了，因为不仅期权在变便宜，你的 K 值（虚线）也在变大。
+        * **灰色虚线**：K 值的变化路径。这代表了你的心态——股价越低，下注越重。
+        * **结果**：这张 {int(best_row['Days'])} 天的合约，完美配合了你的心态，在 $V_{{fill}}$ 处精准达到满仓。
     """)
 
 
@@ -548,128 +640,8 @@ def page_dashboard(ticker, lambda_val, sigma_val, r_f, k_factor, beta, P, V_targ
 
     st.markdown("---")
 
-    # --- F. Dynamic K-Factor Strategy Visualizer (NEW) ---
-    st.subheader("💡 动态 K 值策略推演 (Dynamic K-Factor Matrix)")
-    st.info(f"此图展示了当股价从当前 ${P} 下跌至补仓价 ${V_fill} 时，若设定不同的【最终目标 K 值】，总仓位将如何变化。")
-    st.caption(f"假设：K 值随股价下跌线性递增。起点为当前设定的 K={k_factor}，终点为图例中的目标 K。")
-
-    if P <= V_fill:
-        st.warning(f"当前价格 ${P} 已低于或等于补仓价 ${V_fill}。建议直接采用目标 K 值进行配置，无需动态推演。")
-    else:
-        # Simulation Parameters
-        sim_steps = 30
-        sim_prices = np.linspace(P, V_fill, sim_steps)
-
-        # Generate Target Ks: Start from current k_factor, step up to 1.0
-        # Example: if k=0.5, we want [0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
-        # We use a small epsilon to ensure 1.0 is included if step aligns
-        step = 0.1
-        if k_factor >= 1.0:
-            target_ks = [1.0]
-        else:
-            # Create range
-            targets = np.arange(k_factor, 1.0 + 1e-9, step)
-            # Ensure 1.0 is strictly in the list if not already (due to float precision)
-            if abs(targets[-1] - 1.0) > 1e-5:
-                targets = np.append(targets, 1.0)
-            target_ks = targets
-
-        # Prepare Plot
-        fig_sim, ax_sim = plt.subplots(figsize=(10, 6))
-
-        # Color map - distinct colors
-        colors = plt.cm.plasma(np.linspace(0, 0.9, len(target_ks)))
-
-        for idx, target_k in enumerate(target_ks):
-            allocations = []
-
-            # Label generation
-            if abs(target_k - k_factor) < 0.01:
-                label_str = f"保持恒定 K={target_k:.1f}"
-            else:
-                label_str = f"目标 K={target_k:.1f}"
-
-            hit_100_idx = -1
-
-            for i, p_sim in enumerate(sim_prices):
-                # 1. Linear Interpolation of K
-                # Progress: 0.0 at Start(P), 1.0 at End(V_fill)
-                progress = (P - p_sim) / (P - V_fill)
-                current_sim_k = k_factor + (target_k - k_factor) * progress
-
-                # 2. Recalculate Option/Greeks
-                T_sim = days_to_expiry / 365.0
-                c_sim, delta_sim, theta_sim_ann = bs_greek_calculator(p_sim, V_hard, T_sim, r_f, iv_pricing)
-
-                val = 0.0
-                if c_sim > 0:
-                    theta_yield_sim = abs(theta_sim_ann) / c_sim
-                    L_sim = delta_sim * (p_sim / c_sim)
-
-                    mu_stock_sim = lambda_val * np.log(V_target / p_sim)
-                    mu_leaps_sim = mu_stock_sim * L_sim
-                    ERP_sim = mu_leaps_sim - r_f - theta_yield_sim
-
-                    sigma_leaps_sim = sigma_val * L_sim
-                    var_leaps_sim = sigma_leaps_sim ** 2
-
-                    dist_sim = p_sim - V_hard
-                    risk_ratio_sim = max(0.0, min(1.0, dist_sim / range_len))
-                    alpha_sim = 1.0 - (beta * risk_ratio_sim)
-
-                    if ERP_sim > 0 and var_leaps_sim > 0:
-                        val = (current_sim_k * alpha_sim * ERP_sim) / var_leaps_sim
-
-                val = max(0.0, val)
-                allocations.append(val)
-
-                # Track when it hits 100%
-                if val >= 1.0 and hit_100_idx == -1:
-                    hit_100_idx = i
-
-            # Plot Logic
-            # If hits 100%, we can truncate or just let it go high but clip visually
-            # The prompt asks: "什么时候会加满（占到100%的话就停止循环进入下一个）"
-            # Visually showing it capping at 100% is often better than stopping the line
-
-            # Clip values for plotting but keep data integrity?
-            # Let's plot actual values but limit Y axis to e.g. 1.2
-
-            ax_sim.plot(sim_prices, allocations, label=label_str, color=colors[idx], linewidth=2)
 
 
-
-        # Formatting
-        ax_sim.set_title(f"不同 K 值递增策略下的仓位路径 (${P} -> ${V_fill})", fontsize=12)
-        ax_sim.set_xlabel("股价 ($)", fontsize=10)
-        ax_sim.set_ylabel("建议总仓位 % (f)", fontsize=10)
-
-        # X Axis: Invert to show price dropping from Left to Right?
-        # Standard financial charts usually have time/lower prices depending on context.
-        # User wants "Drop". High -> Low.
-        ax_sim.invert_xaxis()
-
-        ax_sim.set_ylim(0, 1.5) # Allow seeing a bit above 100%
-        ax_sim.yaxis.set_major_formatter(mtick.PercentFormatter(1.0))
-
-        # 100% Line
-        ax_sim.axhline(1.0, color='red', linestyle='--', linewidth=1.5, alpha=0.7, label="满仓线 (100%)")
-
-        ax_sim.legend(loc='upper right', fontsize=8, framealpha=0.9)
-        ax_sim.grid(True, alpha=0.3)
-
-        st.pyplot(fig_sim)
-        plt.close(fig_sim)
-
-        st.markdown(f"""
-        **图表说明：**
-        * **X轴**：股价从当前价格逐渐下跌至补仓价。
-        * **Y轴**：凯利公式计算出的建议总仓位。
-        * **彩色线条**：代表不同的策略。例如 "目标 K=1.0" 意味着随着股价下跌，K 值从当前的 {k_factor} 线性增加到 1.0。
-        * **交点/红线**：当线条触及 100% 红线时，意味着该策略下建议满仓，后续应停止加仓或仅维持仓位。
-        """)
-
-    st.markdown("---")
 
     # --- G. Stress Test (NEW FEATURE) ---
     st.subheader("⚠️ 压力测试 (Stress Test) - 账户净值模拟")
@@ -900,7 +872,7 @@ with st.sidebar:
 
     st.divider()
     lambda_val = st.number_input("年化 Lambda (λ)", value=st.session_state['lambda'], key='lambda_global', format="%.4f",
-                               help="【均值回归动力】数值越大，修复越快。若图表显示 Lambda 处于历史极高位(>8.0)，建议手动调低至 5.0 左右以防噪音。")
+                               help="【均值回归动力】数值越大，修复越快。若图表显示 Lambda 处于历史极高位(>80分位)，建议手动调低以提高安全边际。")
     sigma_val = st.number_input("年化 Sigma (σ)", value=st.session_state['sigma'], key='sigma_global', format="%.4f",
                               help="【保守波动率】通常取历史 85% 分位数。用于计算凯利公式的分母(风险)。")
 

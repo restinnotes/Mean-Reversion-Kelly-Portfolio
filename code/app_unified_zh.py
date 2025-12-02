@@ -35,68 +35,49 @@ except ImportError as e:
 # ==========================================
 # 2. Matplotlib Font Configuration (Chinese Support)
 # ==========================================
-import matplotlib.font_manager as fm
-import matplotlib.pyplot as plt
-import os
-import sys
-import streamlit as st
-
-# 🔑 关键：使用 Streamlit Session State 防止重复配置
-if 'font_configured' not in st.session_state:
-    st.session_state.font_configured = False
-
-import os
-import matplotlib.pyplot as plt
-import matplotlib.font_manager as fm
-import streamlit as st
-
 def configure_chinese_font():
     """
-    强制加载项目自带的中文字体，解决 Streamlit Cloud 中文乱码问题
+    Force load project-specific Chinese font to resolve encoding issues in Streamlit Cloud.
+    Sets global matplotlib parameters.
     """
-    # 1. 确定字体文件的绝对路径
-    # 这里的路径是相对于项目根目录的，根据你的文件结构进行调整
-    # 假设 fonts 文件夹在项目根目录，而此脚本在 code/ 目录下，需要回退一级
+    # 1. Determine absolute path to font
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    project_root = os.path.dirname(current_dir) # 回退到 project_root
+    project_root = os.path.dirname(current_dir) # Go back to project_root
 
-    # 这里修改为你上传的具体文件名，比如 'SimHei.ttf' 或 'NotoSansSC-Regular.ttf'
+    # Modify this to your specific font file name
     font_file_name = 'simsunb.ttf'
     font_path = os.path.join(project_root, "fonts", font_file_name)
 
-    # 2. 检查文件是否存在
+    # 2. Fallback check
     if not os.path.exists(font_path):
-        # 如果找不到，尝试一下相对路径（兼容性处理）
         font_path = os.path.join("fonts", font_file_name)
 
     if os.path.exists(font_path):
         try:
-            # 3. 核心：使用 addfont 动态添加字体
+            # 3. Add font dynamically
             fm.fontManager.addfont(font_path)
 
-            # 4. 获取该字体的内部名称
+            # 4. Get internal font name
             prop = fm.FontProperties(fname=font_path)
             custom_font_name = prop.get_name()
 
-            # 5. 设置为 Matplotlib 的默认字体
-            # 将自定义字体放在列表第一位，拥有最高优先级
+            # 5. Set as default globally
             plt.rcParams['font.family'] = 'sans-serif'
             plt.rcParams['font.sans-serif'] = [custom_font_name, 'DejaVu Sans', 'Arial']
-            plt.rcParams['axes.unicode_minus'] = False # 解决负号显示为方块的问题
+            plt.rcParams['axes.unicode_minus'] = False
 
-            print(f"✅ 成功加载自定义字体: {custom_font_name} from {font_path}")
+            print(f"✅ Successfully loaded custom font: {custom_font_name} from {font_path}")
             return True
         except Exception as e:
-            st.error(f"加载字体出错: {e}")
+            st.error(f"Font loading error: {e}")
             return False
     else:
-        # 如果文件没上传成功，打印警告，并尝试使用备选方案（依赖 packages.txt）
-        print(f"⚠️ 未找到字体文件: {font_path}。尝试使用系统预装字体...")
+        print(f"⚠️ Font file not found: {font_path}. Using system defaults...")
         plt.rcParams['font.sans-serif'] = ['WenQuanYi Zen Hei', 'Noto Sans CJK SC', 'SimHei', 'Arial']
         plt.rcParams['axes.unicode_minus'] = False
         return False
 
-# 在脚本最开始调用
+# Configure font globally at startup
 configure_chinese_font()
 
 # ==========================================
@@ -147,23 +128,23 @@ def analyze_probabilities(paths, target_pe, current_pe):
 
 
 # ==========================================
-# 4. PAGE LOGIC FUNCTIONS (封装各应用逻辑)
+# 4. PAGE LOGIC FUNCTIONS
 # ==========================================
 
-# --- Page 1: 市场诊断 (Rolling Analysis) ---
+# --- Page 1: Diagnosis (Rolling Analysis) ---
 def page_diagnosis(ticker, window_days):
     st.title("📈 Step 0: 市场诊断 - 滚动分析")
     st.subheader(f"资产: {ticker} | 滚动窗口: {window_days} 交易日")
     st.markdown("---")
 
-    # --- 用户提示：Step 0 指引 ---
+    # --- User Guide ---
     with st.expander("❓ Step 0：市场诊断指引 (验证均值回归)"):
         st.markdown("""
             这是**风险控制的第一步**，用于验证均值回归假设是否成立，以及评估回归动力 ($\lambda$) 的可靠性。
             **核心目标：**
-            1.  **判断低估是否真实：** 查看 PE Ratio 曲线是否明显低于滚动均线，确认存在回归空间。
-            2.  **评估 $\lambda$ 质量：** 检查 Lambda 曲线最右端的值是否远高于其历史平均水平（虚高）。如果是，后续 Step 1 中应**手动调低 $\lambda$**。
-            3.  **确认时间可行性：** 检查 Monte Carlo 模拟，确认 90% 概率触摸目标所需的最短时间，以此作为 **LEAPS 选品的期限底线**。
+            1.  **判断低估是否真实：** 查看 PE Ratio 曲线是否明显低于滚动均线，确认存在回归空间。
+            2.  **评估 $\lambda$ 质量：** 检查 Lambda 曲线最右端的值是否远高于其历史平均水平（虚高）。如果是，后续 Step 1 中应**手动调低 $\lambda$**。
+            3.  **确认时间可行性：** 检查 Monte Carlo 模拟，确认 90% 概率触摸目标所需的最短时间，以此作为 **LEAPS 选品的期限底线**。
         """)
     st.markdown("---")
     # ----------------------------
@@ -181,7 +162,7 @@ def page_diagnosis(ticker, window_days):
         st.error(f"读取 PE 数据失败: {e}")
         return
 
-    # --- 1. 计算滚动指标 ---
+    # --- 1. Calculate Rolling Metrics ---
     if len(df) < window_days:
         st.warning("数据不足，无法进行滚动指标计算。")
         return
@@ -222,7 +203,7 @@ def page_diagnosis(ticker, window_days):
     if st.session_state.ticker == ticker:
         st.session_state['lambda'] = current_lambda
 
-    # --- 2. 诊断报告 (简化) ---
+    # --- 2. Diagnosis Report ---
     st.subheader("诊断报告与 Monte Carlo 模拟")
     st.markdown("---")
     col_d1, col_d2 = st.columns(2)
@@ -242,7 +223,7 @@ def page_diagnosis(ticker, window_days):
 
     # ------------------------------------------
 
-    # --- 3. Monte Carlo 模拟 ---
+    # --- 3. Monte Carlo Simulation ---
     st.markdown("##### Monte Carlo 模拟结果")
     st.caption(f"目标: PE {current_pe:.2f} 修复到均值 PE {current_mean:.2f} | 模拟路径: 10,000条")
 
@@ -273,7 +254,7 @@ def page_diagnosis(ticker, window_days):
 
     st.markdown("---")
 
-    # --- 4. Plotting (三张图表) ---
+    # --- 4. Plotting ---
     plot_df = df.iloc[start_index:].copy()
     plot_df['Lambda'] = lambdas_annual_hist
     plot_df['Half_Life'] = half_lives_hist
@@ -284,7 +265,6 @@ def page_diagnosis(ticker, window_days):
     hl_90 = np.percentile(half_lives_hist, 90)
 
     # Plot 1: PE Context
-
     fig1, ax0 = plt.subplots(figsize=(10, 3))
     ax0.plot(plot_df.index, plot_df['value'], 'k', alpha=0.8, label='市盈率')
     ax0.plot(plot_df.index, plot_df['rolling_mean'], 'b--', label=f'{window_days}日滚动均值')
@@ -296,7 +276,6 @@ def page_diagnosis(ticker, window_days):
     plt.close(fig1)
 
     # Plot 2: Lambda
-
     fig2, ax1 = plt.subplots(figsize=(10, 3))
     ax1.plot(plot_df.index, plot_df['Lambda'], color='#1f77b4', label='年化 Lambda')
     ax1.axhline(lambda_80, color='r', linestyle='--', label=f'80%分位 ({lambda_80:.1f})')
@@ -309,7 +288,6 @@ def page_diagnosis(ticker, window_days):
     plt.close(fig2)
 
     # Plot 3: Half-Life
-
     fig3, ax2 = plt.subplots(figsize=(10, 3))
     ax2.plot(plot_df.index, plot_df['Half_Life'], color='#ff7f0e', label='半衰期 (交易日)')
     ax2.axhline(hl_90, color='purple', linestyle='--', label=f'90%分位风险 ({hl_90:.1f}日)')
@@ -366,13 +344,13 @@ def page_diagnosis(ticker, window_days):
         st.warning("请在侧边栏点击 '获取历史统计数据' 以加载波动率历史数据。")
 
 
-# --- Page 2: 最优期限求解 (Optimal Expiry Solver) ---
+# --- Page 2: Optimal Expiry Solver ---
 def page_solver(P_CURRENT, V_TARGET, V_HARD_FLOOR, V_FILL_PLAN, LAMBDA, SIGMA_ASSET, IV_PRICING, R_RISKFREE, ticker):
     st.title("🎯 Step 0.5: 最优期限求解器")
     st.subheader(f"资产: {ticker} | P={P_CURRENT}")
     st.markdown("---")
 
-    # --- 用户提示：Step 0.5 指引 ---
+    # --- User Guide ---
     with st.expander("❓ Step 0.5：求解器原理与下一步行动"):
         st.markdown("""
             求解器旨在找到一个**攻守平衡点**：即在满足凯利增长速度要求的同时，预留出在计划补仓价 ($V_{fill}$) 进行 **1:1 补仓的充足现金**。
@@ -428,7 +406,7 @@ def page_solver(P_CURRENT, V_TARGET, V_HARD_FLOOR, V_FILL_PLAN, LAMBDA, SIGMA_AS
     with col_r3:
         st.metric("期权价格 (BS 估值)", f"${best_row['Option_Price']:.2f}")
 
-    # --- Plotting (修复中文标签) ---
+    # --- Plotting ---
     st.markdown("---")
     st.markdown("##### 攻守平衡曲线图")
     st.caption("最优解为进攻曲线 (0.5 * Kelly) 与防守上限 (Pilot Cash Cap) 的交点。")
@@ -469,12 +447,12 @@ def page_solver(P_CURRENT, V_TARGET, V_HARD_FLOOR, V_FILL_PLAN, LAMBDA, SIGMA_AS
     """)
 
 
-# --- Page 3: 主仓位计算器 (App Dashboard) ---
+# --- Page 3: Main Calculator (Dashboard) ---
 def page_dashboard(ticker, lambda_val, sigma_val, r_f, k_factor, beta, P, V_target, V_hard, opt_price, delta, theta):
     st.title("🌌 Step 1: 凯利 LEAPS 仓位主计算器")
     st.markdown("---")
 
-    # --- 用户提示：Step 1 指引 ---
+    # --- User Guide ---
     with st.expander("❓ Step 1：核心目标 (买多少？)"):
         st.markdown("""
             本计算器是系统的**核心步骤**。它将**均值回归动力** ($\lambda$) 与 **LEAPS 的杠杆风险** ($L^2\sigma^2$) 相结合，计算出在您设定的风险偏好 (k) 和信心 ($\\alpha$) 下，能够**最大化长期几何增长率**的现金投入比例。
@@ -649,14 +627,14 @@ def page_multi_asset_normalization(max_leverage_cap):
 
     df = pd.DataFrame(portfolio_data)
 
-    # 1. 计算原始总风险暴露
+    # 1. Calculate Raw Exposure
     total_raw_exposure = df['Raw_Kelly_Pct'].sum()
 
     st.markdown(f"**总资产数量:** `{len(df)}`")
     st.markdown(f"**原始 Kelly 理论总仓位 (C_raw):** `{total_raw_exposure:.2%}`")
     st.markdown(f"**设置的现金上限 (C_max):** `{max_leverage_cap:.2%}`")
 
-    # 2. 归一化逻辑
+    # 2. Normalize Logic
     if total_raw_exposure > max_leverage_cap:
         scale_factor = max_leverage_cap / total_raw_exposure
         st.error(f"🚨 总仓位超限，已进行归一化缩放。缩放因子: {scale_factor:.4f}")
@@ -664,10 +642,10 @@ def page_multi_asset_normalization(max_leverage_cap):
         scale_factor = 1.0
         st.success("✅ 总仓位在限制内。无需缩放。")
 
-    # 3. 应用归一化
+    # 3. Apply Normalization
     df['Final_Pct'] = df['Raw_Kelly_Pct'] * scale_factor
 
-    # 4. 格式化输出
+    # 4. Format Output
     df_display = df[['Ticker', 'Raw_Kelly_Pct', 'Final_Pct', 'ERP', 'L', 'Sigma_Leaps', 'k_factor', 'Alpha']].copy()
 
     # Apply formatting
@@ -699,12 +677,12 @@ def page_multi_asset_normalization(max_leverage_cap):
 
 
 # ==========================================
-# 5. MAIN ROUTER (统一入口)
+# 5. MAIN ROUTER
 # ==========================================
 st.set_page_config(page_title="统一凯利量化工具", layout="wide", page_icon="📈")
 
 
-# --- 初始化 Session State 中的默认值 ---
+# --- Initialize Session State Defaults ---
 default_vals = {
     'r_f': 0.037, 'k_factor': 0.50, 'beta': 0.20, 'P': 180.00,
     'V_target': 225.00, 'V_hard': 130.00, 'V_fill': 145.00,
@@ -717,7 +695,7 @@ for key, default_val in default_vals.items():
     if key not in st.session_state:
         st.session_state[key] = default_val
 
-# --- 侧边栏统一输入 (Global Inputs) ---
+# --- Sidebar Inputs ---
 with st.sidebar:
     st.title("导航与全局参数")
 

@@ -23,6 +23,10 @@ project_root = get_resource_root()
 sys.path.append(os.path.join(project_root, "code", "utils"))
 sys.path.append(os.path.join(project_root, "code", "strategies"))
 
+# Default values for lambda and sigma in case imports fail
+DEFAULT_LAMBDA = 6.0393
+DEFAULT_SIGMA = 0.6082
+
 try:
     from lambda_tools import get_ou_for_ticker, calculate_ou_params, calculate_historical_ma_reversion
     from sigma_tools import get_sigma
@@ -276,7 +280,8 @@ def page_diagnosis(ticker, window_days):
 
 
     # 将 Lambda 存入 Session 供后续使用
-    if st.session_state.ticker == ticker:
+    # st.session_state.ticker == ticker 检查可以防止当用户快速切换 ticker 时 session state 被不准确的 lambda 覆盖
+    if st.session_state.get('ticker') == ticker:
         st.session_state['lambda'] = current_lambda
 
     # =========================================================
@@ -358,7 +363,10 @@ def page_diagnosis(ticker, window_days):
     # 这一部分放在后面，作为基于上述参数的推演结果
     # =========================================================
     st.subheader("2. 盈亏分布推演 (Simulation)")
-    st.caption(f"👉 **前提假设**：如果估值回归真的遵循上述 Lambda={current_lambda:.2f} 的历史规律，那么正态分布下的结局是：")
+
+    # [FIX] Added None check for current_lambda to prevent formatting error in st.caption
+    lambda_display = f"{current_lambda:.2f}" if current_lambda is not None else 'N/A'
+    st.caption(f"👉 **前提假设**：如果估值回归真的遵循上述 Lambda={lambda_display} 的历史规律，那么正态分布下的结局是：")
 
     # 定义关键时间窗口
     check_points_map = {
@@ -434,8 +442,8 @@ def page_solver(P_CURRENT, V_TARGET, V_HARD_FLOOR, V_FILL_PLAN, LAMBDA, SIGMA_AS
         # 允许用户设定补仓时的 K
         # MODIFIED: Default value set to 0.5 per user request (Constant K strategy by default)
         k_fill_target = st.number_input("满仓 K 值 (Target at Fill)",
-                                     min_value=K_FACTOR, max_value=2.0, value=0.5, step=0.1,
-                                     help="当股价跌到 V_fill 时，你愿意使用多大的 K 值？通常设为 0.5 (保持不变) 或 1.0 (激进加仓)。")
+                                       min_value=K_FACTOR, max_value=2.0, value=0.5, step=0.1,
+                                       help="当股价跌到 V_fill 时，你愿意使用多大的 K 值？通常设为 0.5 (保持不变) 或 1.0 (激进加仓)。")
 
 
     # --- 1. 策略配置区 (新增) ---
@@ -446,8 +454,8 @@ def page_solver(P_CURRENT, V_TARGET, V_HARD_FLOOR, V_FILL_PLAN, LAMBDA, SIGMA_AS
 
             **本工具的目标**：
             寻找一张合约，使得：
-            1.  **现在 ($P={P_CURRENT}$)**：应用 **起始 K={K_FACTOR}** 时，仓位适中。
-            2.  **到底 ($P={V_FILL_PLAN}$)**：应用 **最终 K={k_fill_target}** 时，建议仓位 **恰好为 100%**。
+            1.  **现在 ($P={P_CURRENT}$)**：应用 **起始 K={K_FACTOR}** 时，仓位适中。
+            2.  **到底 ($P={V_FILL_PLAN}$)**：应用 **最终 K={k_fill_target}** 时，建议仓位 **恰好为 100%**。
 
             这样你就能设计出一个“越跌越买，到底正好满仓”的完美加仓路径。
         """)
@@ -742,7 +750,7 @@ def page_dashboard(ticker, lambda_val, sigma_val, r_f, k_factor, beta, P, V_targ
 
             # MODIFIED: Cap logic in chart
             if p_sim <= V_fill:
-                 # Re-calculate allocation using k_fill and cap at 1.0
+                # Re-calculate allocation using k_fill and cap at 1.0
                 k_fill_dynamic = k_fill
                 kelly_ratio_raw_at_fill = calculate_single_asset_kelly_ratio(
                     p_sim, c_sim, d_sim, t_val_sim, V_target, V_hard, lambda_val, sigma_val, r_f, beta=beta
@@ -811,7 +819,7 @@ def page_dashboard(ticker, lambda_val, sigma_val, r_f, k_factor, beta, P, V_targ
         if max_c > 50:
              step_size = max(1, int(max_c / 20)) # e.g. if 100 contracts, step every 5
         else:
-             step_size = 1
+            step_size = 1
 
         st.info(f"💡 **网格操作提示** (检测到最大持仓约 {int(max_c)} 张，已自动将提示步长设为 **{step_size}** 张):")
 
@@ -870,96 +878,96 @@ def page_dashboard(ticker, lambda_val, sigma_val, r_f, k_factor, beta, P, V_targ
                 st.write("无近期减仓点 (或已空仓)")
             else:
                  for p_val, c_val in sell_points:
-                     # [FIX 2] 计算目标台阶，而不是显示计算出的浮动值
-                     # 也就是：当前持仓 - (这是第几次卖出 * 步长)
-                     idx_sell = sell_points.index((p_val, c_val))
-                     target_hold = current_c - (idx_sell + 1) * step_size
+                      # [FIX 2] 计算目标台阶，而不是显示计算出的浮动值
+                      # 也就是：当前持仓 - (这是第几次卖出 * 步长)
+                      idx_sell = sell_points.index((p_val, c_val))
+                      target_hold = current_c - (idx_sell + 1) * step_size
 
-                     st.write(f"- 涨至 **${p_val:.2f}** : 减至 **{int(target_hold)}** 张 (-{step_size}张)")
-
-
-    st.markdown("---")
+                      st.write(f"- 涨至 **${p_val:.2f}** : 减至 **{int(target_hold)}** 张 (-{step_size}张)")
 
 
-    # --- G. Stress Test (NEW FEATURE) ---
-    st.subheader("⚠️ 压力测试 (Stress Test) - 账户净值模拟")
-    st.caption(f"基于当前建议仓位 ({f_cash:.2%}) 的次日盈亏模拟")
-
-    with st.expander("📊 点击展开：如果明天发生暴跌，我的账户将承受？", expanded=True):
-
-        # 1. Get Daily Sigma for Stock
-        sigma_daily_stock = sigma_val / np.sqrt(252)
-
-        # 2. Define Scenarios (Drop in Stock Price)
-        scenarios = [
-            ("日常波动 (1σ)", -1.0 * sigma_daily_stock),
-            ("周度回调 (2σ)", -2.0 * sigma_daily_stock),
-            ("极端黑天鹅 (3σ)", -3.0 * sigma_daily_stock),
-            ("熔断级崩盘 (-20%)", -0.20)
-        ]
-
-        risk_table = []
-
-        # We use Delta Approximation for simplicity: LEAPS Drop % ≈ Leverage * Stock Drop %
-        # Assume a nominal account size of $100,000 for dollar loss display (optional but illustrative)
-        NOMINAL_ACCOUNT_VALUE = total_capital
-
-        for name, stock_drop in scenarios:
-            if L == 0:
-                leaps_drop_pct = 0.0
-            else:
-                # Use effective leverage L for approximation
-                leaps_drop_pct = stock_drop * L
-
-            # Account Impact = Kelly_Pct * Leaps_Drop_Pct
-            account_impact_pct = f_cash * leaps_drop_pct
-            account_loss_usd = account_impact_pct * NOMINAL_ACCOUNT_VALUE
-
-            risk_table.append({
-                "情景": name,
-                "标的跌幅": f"{stock_drop:.2%}",
-                "LEAPS 预估跌幅": f"{leaps_drop_pct:.2%}",
-                "账户总净值回撤": f"{account_impact_pct:.2%}",
-                "预估亏损": f"${account_loss_usd:,.0f}" if f_cash > 0 else "$0",
-            })
-
-        risk_df = pd.DataFrame(risk_table)
-        st.table(risk_df)
-        st.caption("*注：此处使用有效杠杆 (L) 进行线性估算，实际期权在暴跌中的跌幅可能因 Gamma/Vega 效应有所不同。仅供风控参考。如果 $3\\sigma$ 亏损额让你感到恐慌，请在侧边栏调低 $k$ 值。")
-
-
-    # --- Save to Portfolio Feature ---
-    if opt_price > 0 and ERP > 0:
         st.markdown("---")
-        st.subheader("💾 保存到组合")
 
-        if st.button("➕ 保存当前配置到组合", type="primary"):
-            asset_record = {
-                'Ticker': ticker,
-                'Raw_Kelly_Pct': f_cash,
-                'ERP': ERP,
-                'L': L,
-                'k_factor': k_factor,
-                'Alpha': alpha,
-                'P': P,
-                'V_target': V_target,
-                'V_hard': V_hard,
-                'Sigma_Leaps': sigma_leaps
-            }
 
-            existing_tickers = [item['Ticker'] for item in st.session_state.get('portfolio_data', [])]
+        # --- G. Stress Test (NEW FEATURE) ---
+        st.subheader("⚠️ 压力测试 (Stress Test) - 账户净值模拟")
+        st.caption(f"基于当前建议仓位 ({f_cash:.2%}) 的次日盈亏模拟")
 
-            if ticker in existing_tickers:
-                idx = existing_tickers.index(ticker)
-                st.session_state['portfolio_data'][idx] = asset_record
-                st.success(f"✅ 已更新 {ticker} 的组合数据")
-            else:
-                if 'portfolio_data' not in st.session_state:
-                        st.session_state['portfolio_data'] = []
-                st.session_state['portfolio_data'].append(asset_record)
-                st.success(f"✅ 已将 {ticker} 添加到组合")
+        with st.expander("📊 点击展开：如果明天发生暴跌，我的账户将承受？", expanded=True):
 
-            st.info(f"当前组合共有 {len(st.session_state.get('portfolio_data', []))} 个标的")
+            # 1. Get Daily Sigma for Stock
+            sigma_daily_stock = sigma_val / np.sqrt(252)
+
+            # 2. Define Scenarios (Drop in Stock Price)
+            scenarios = [
+                ("日常波动 (1σ)", -1.0 * sigma_daily_stock),
+                ("周度回调 (2σ)", -2.0 * sigma_daily_stock),
+                ("极端黑天鹅 (3σ)", -3.0 * sigma_daily_stock),
+                ("熔断级崩盘 (-20%)", -0.20)
+            ]
+
+            risk_table = []
+
+            # We use Delta Approximation for simplicity: LEAPS Drop % ≈ Leverage * Stock Drop %
+            # Assume a nominal account size of $100,000 for dollar loss display (optional but illustrative)
+            NOMINAL_ACCOUNT_VALUE = total_capital
+
+            for name, stock_drop in scenarios:
+                if L == 0:
+                    leaps_drop_pct = 0.0
+                else:
+                    # Use effective leverage L for approximation
+                    leaps_drop_pct = stock_drop * L
+
+                # Account Impact = Kelly_Pct * Leaps_Drop_Pct
+                account_impact_pct = f_cash * leaps_drop_pct
+                account_loss_usd = account_impact_pct * NOMINAL_ACCOUNT_VALUE
+
+                risk_table.append({
+                    "情景": name,
+                    "标的跌幅": f"{stock_drop:.2%}",
+                    "LEAPS 预估跌幅": f"{leaps_drop_pct:.2%}",
+                    "账户总净值回撤": f"{account_impact_pct:.2%}",
+                    "预估亏损": f"${account_loss_usd:,.0f}" if f_cash > 0 else "$0",
+                })
+
+            risk_df = pd.DataFrame(risk_table)
+            st.table(risk_df)
+            st.caption("*注：此处使用有效杠杆 (L) 进行线性估算，实际期权在暴跌中的跌幅可能因 Gamma/Vega 效应有所不同。仅供风控参考。如果 $3\\sigma$ 亏损额让你感到恐慌，请在侧边栏调低 $k$ 值。")
+
+
+        # --- Save to Portfolio Feature ---
+        if opt_price > 0 and ERP > 0:
+            st.markdown("---")
+            st.subheader("💾 保存到组合")
+
+            if st.button("➕ 保存当前配置到组合", type="primary"):
+                asset_record = {
+                    'Ticker': ticker,
+                    'Raw_Kelly_Pct': f_cash,
+                    'ERP': ERP,
+                    'L': L,
+                    'k_factor': k_factor,
+                    'Alpha': alpha,
+                    'P': P,
+                    'V_target': V_target,
+                    'V_hard': V_hard,
+                    'Sigma_Leaps': sigma_leaps
+                }
+
+                existing_tickers = [item['Ticker'] for item in st.session_state.get('portfolio_data', [])]
+
+                if ticker in existing_tickers:
+                    idx = existing_tickers.index(ticker)
+                    st.session_state['portfolio_data'][idx] = asset_record
+                    st.success(f"✅ 已更新 {ticker} 的组合数据")
+                else:
+                    if 'portfolio_data' not in st.session_state:
+                                st.session_state['portfolio_data'] = []
+                    st.session_state['portfolio_data'].append(asset_record)
+                    st.success(f"✅ 已将 {ticker} 添加到组合")
+
+                st.info(f"当前组合共有 {len(st.session_state.get('portfolio_data', []))} 个标的")
 
 
 # --- Page for Multi-Asset Normalization ---
@@ -1056,8 +1064,11 @@ default_vals = {
     'r_f': 0.037, 'k_factor': 0.50, 'beta': 0.20, 'P': 180.00,
     'V_target': 225.00, 'V_hard': 130.00, 'V_fill': 145.00,
     'iv_pricing': 0.5100, 'opt_price': 61.60, 'delta': 0.8446,
-    'theta': 0.0425, 'ticker': "NVDA", 'lambda': 6.0393,
-    'sigma': 0.6082, 'portfolio_data': [], 'window_days': 90,
+    'theta': 0.0425, 'ticker': "NVDA",
+    # [MODIFIED] Use constants for initial values
+    'lambda': DEFAULT_LAMBDA,
+    'sigma': DEFAULT_SIGMA,
+    'portfolio_data': [], 'window_days': 90,
     'days_to_expiry': 365, # Default 1 year
     'k_fill': 1.0, # NEW Default Max K for Step 1
     'total_capital': 100000.0 # NEW Default Capital
@@ -1089,8 +1100,10 @@ with st.sidebar:
     # A. 刚打开 App，还没有 fetch 过 (last_fetched_ticker 不存在)
     # B. 用户修改了输入框内容 (ticker != last_fetched_ticker)
     # C. 数据丢失 (sigma_dict 不在 session 中)
+    # [MODIFIED] Added explicit check for existing lambda/sigma values to refresh if they are still defaults or None (though defaults should prevent None)
     need_refresh = (ticker != st.session_state.get('last_fetched_ticker')) or \
-                   ('sigma_dict' not in st.session_state)
+                   ('sigma_dict' not in st.session_state) or \
+                   (st.session_state.get('lambda') is None)
 
     if need_refresh:
         # 检查依赖是否存在
@@ -1102,13 +1115,16 @@ with st.sidebar:
                     # === 以下是原按钮内的获取逻辑 (原封不动搬运) ===
                     ou_window = st.session_state.get('window_days', 90)
                     ou = get_ou_for_ticker(ticker, window=ou_window)
-                    # Handle None from OU calculation
-                    new_lambda = ou["lambda"] * 252.0 if ou and ou["lambda"] is not None else st.session_state.get('lambda', 6.0393)
+
+                    # [MODIFIED] Robust check for OU results
+                    new_lambda = DEFAULT_LAMBDA
+                    if ou and ou["lambda"] is not None:
+                         new_lambda = ou["lambda"] * 252.0
 
                     sigma_dict, _, _, rolling_series_dict = get_sigma(
                         [ticker], period="5y", window=252, percentile=0.85, annualize=True, safety_lock=True
                     )
-                    new_sigma = sigma_dict.get(ticker)
+                    new_sigma = sigma_dict.get(ticker, DEFAULT_SIGMA) # Fallback to default if not found
 
                     # === 更新 Session State ===
                     st.session_state['lambda'] = new_lambda
@@ -1128,16 +1144,33 @@ with st.sidebar:
             st.error("依赖模块 (lambda_tools.py / sigma_tools.py) 未导入，无法获取历史数据。")
 
     # --- 3. 如果数据已就绪，显示简报 ---
-    if st.session_state.get('last_fetched_ticker') == ticker and 'lambda' in st.session_state:
-         # 保持用户要求的显示精度
-         st.caption(f"✅ 已加载: λ={st.session_state['lambda']:.2f}, σ={st.session_state['sigma']:.1%}")
+    # [FIX] Enhanced check to handle NoneType error (the original issue)
+    current_lambda_val = st.session_state.get('lambda')
+    current_sigma_val = st.session_state.get('sigma')
+
+    lambda_display = 'N/A'
+    sigma_display = 'N/A'
+
+    if current_lambda_val is not None:
+        lambda_display = f"{current_lambda_val:.4f}"
+
+    if current_sigma_val is not None:
+        sigma_display = f"{current_sigma_val:.2%}"
+
+    if st.session_state.get('last_fetched_ticker') == ticker:
+        st.caption(f"✅ 已加载: λ={lambda_display}, σ={sigma_display}")
 
     st.divider()
 
-    lambda_val = st.number_input("年化 Lambda (λ)", value=st.session_state['lambda'], key='lambda_global', format="%.4f",
+    lambda_val = st.number_input("年化 Lambda (λ)", value=current_lambda_val if current_lambda_val is not None else DEFAULT_LAMBDA, key='lambda_global', format="%.4f",
                                  help="【均值回归动力】数值越大，修复越快。若图表显示 Lambda 处于历史极高位(>80分位)，建议手动调低以提高安全边际。")
-    sigma_val = st.number_input("年化 Sigma (σ)", value=st.session_state['sigma'], key='sigma_global', format="%.4f",
+    sigma_val = st.number_input("年化 Sigma (σ)", value=current_sigma_val if current_sigma_val is not None else DEFAULT_SIGMA, key='sigma_global', format="%.4f",
                                  help="【保守波动率】通常取历史 85% 分位数。用于计算凯利公式的分母(风险)。")
+
+    # Ensure the session state is updated from the number inputs
+    st.session_state['lambda'] = lambda_val
+    st.session_state['sigma'] = sigma_val
+
 
     st.header("2. 策略与市场参数 (动态)")
 
@@ -1180,9 +1213,9 @@ with st.sidebar:
 
             # NEW INPUT: Max K at Fill
             current_k_fill = st.number_input("满仓 K (Max at Fill)",
-                                     min_value=current_k_factor, max_value=2.0, value=st.session_state.k_fill, step=0.1,
-                                     key='k_fill_dash',
-                                     help="当股价跌至 V_fill 时，信心增强，K 值线性增加至此值。")
+                                       min_value=current_k_factor, max_value=2.0, value=st.session_state.k_fill, step=0.1,
+                                       key='k_fill_dash',
+                                       help="当股价跌至 V_fill 时，信心增强，K 值线性增加至此值。")
 
             current_beta = st.slider("估值折扣系数 (beta)", 0.0, 1.0, st.session_state.beta, 0.05, key='beta_dash',
                                          help="【止盈速率/信心衰减】0.2 = 推荐。股价接近目标价时，Alpha 保留 80% 权重。1.0 = 到达目标价即清仓。")
@@ -1263,13 +1296,15 @@ if page == "Step 0: 市场诊断":
 elif page == "Step 0.5: 最优期限求解":
     if current_V_target <= current_V_hard:
         st.error("错误: 目标价必须高于硬底。")
-    elif current_lambda is None or current_sigma is None:
+    # [FIX] Use local variable check
+    elif lambda_val is None or sigma_val is None:
         st.error("请先在侧边栏获取 Lambda/Sigma 统计数据。")
     else:
         page_solver(current_P, current_V_target, current_V_hard, current_V_fill, current_lambda, current_sigma, current_iv_pricing, current_r_f, ticker, current_k_factor, current_beta)
 
 elif page == "Step 1: 主仓位计算器":
-    if current_lambda is None or current_sigma is None:
+    # [FIX] Use local variable check
+    if lambda_val is None or sigma_val is None:
         st.error("请先在侧边栏获取 Lambda/Sigma 统计数据。")
     elif current_opt_price <= 0 or current_delta <= 0:
         st.warning("请在侧边栏输入有效的期权合约数据。")

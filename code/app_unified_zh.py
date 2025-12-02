@@ -284,7 +284,7 @@ def page_diagnosis(ticker, window_days):
     hl_90 = np.percentile(half_lives_hist, 90)
 
     # Plot 1: PE Context
-    ensure_chinese_font()
+
     fig1, ax0 = plt.subplots(figsize=(10, 3))
     ax0.plot(plot_df.index, plot_df['value'], 'k', alpha=0.8, label='市盈率')
     ax0.plot(plot_df.index, plot_df['rolling_mean'], 'b--', label=f'{window_days}日滚动均值')
@@ -296,7 +296,7 @@ def page_diagnosis(ticker, window_days):
     plt.close(fig1)
 
     # Plot 2: Lambda
-    ensure_chinese_font()
+
     fig2, ax1 = plt.subplots(figsize=(10, 3))
     ax1.plot(plot_df.index, plot_df['Lambda'], color='#1f77b4', label='年化 Lambda')
     ax1.axhline(lambda_80, color='r', linestyle='--', label=f'80%分位 ({lambda_80:.1f})')
@@ -309,7 +309,7 @@ def page_diagnosis(ticker, window_days):
     plt.close(fig2)
 
     # Plot 3: Half-Life
-    ensure_chinese_font()
+
     fig3, ax2 = plt.subplots(figsize=(10, 3))
     ax2.plot(plot_df.index, plot_df['Half_Life'], color='#ff7f0e', label='半衰期 (交易日)')
     ax2.axhline(hl_90, color='purple', linestyle='--', label=f'90%分位风险 ({hl_90:.1f}日)')
@@ -339,7 +339,7 @@ def page_diagnosis(ticker, window_days):
         if not roll_vol.empty:
             current = roll_vol.iloc[-1]
             pval = roll_vol.quantile(percentile)
-            ensure_chinese_font()
+
             fig4, ax3 = plt.subplots(figsize=(10, 4))
 
             ax3.plot(index_for_plot, roll_vol.values, linewidth=1.4, label=f'{window}日滚动年化波动率')
@@ -432,7 +432,7 @@ def page_solver(P_CURRENT, V_TARGET, V_HARD_FLOOR, V_FILL_PLAN, LAMBDA, SIGMA_AS
     st.markdown("---")
     st.markdown("##### 攻守平衡曲线图")
     st.caption("最优解为进攻曲线 (0.5 * Kelly) 与防守上限 (Pilot Cash Cap) 的交点。")
-    ensure_chinese_font()
+
     fig, ax = plt.subplots(figsize=(10, 6))
 
     ax.plot(df['Days'], df['Kelly_Half'], label='进攻曲线: 0.5 * Kelly 比例',

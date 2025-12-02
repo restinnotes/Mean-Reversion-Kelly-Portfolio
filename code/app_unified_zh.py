@@ -240,7 +240,28 @@ def page_diagnosis(ticker, window_days):
     current_mean = df['rolling_mean'].iloc[-1]
     current_sigma_daily = sigmas_daily_hist[-1]
 
-    # ... (上接 current_pe = ...; current_mean = ... 等变量定义)
+    # --- Calculate Stock Price ---
+    # P = Price / EPS. Target Price (P_target) = P_current * (PE_mean / PE_current)
+
+    # [MODIFIED] Use the P_anchor from the global sidebar input
+    current_P_anchor = st.session_state.get('P_anchor_global', st.session_state.get('P', 1.0))
+
+    # Calculate target price based on reversion to the current rolling mean PE
+    if current_pe > 0 and current_P_anchor > 0:
+        target_price_from_pe = current_P_anchor * (current_mean / current_pe)
+    else:
+        target_price_from_pe = None
+
+    # --- Calculate Entry Price for -1SD deviation ---
+    annual_sigma_for_ref = st.session_state.get('sigma', 0.6082)
+    daily_sigma_for_ref = annual_sigma_for_ref / np.sqrt(252)
+
+    # Calculate a 1-sigma price drop reference for 'adding'
+    # P_entry_ref = P_current * exp(-sigma_daily)
+    if current_P_anchor > 0 and daily_sigma_for_ref > 0:
+        price_drop_1sd = current_P_anchor * np.exp(-daily_sigma_for_ref)
+    else:
+        price_drop_1sd = None
 
     # =========================================================
     # UPDATE: 切换至 Part 4 (Robust Historical Verification) 逻辑
@@ -290,7 +311,7 @@ def page_diagnosis(ticker, window_days):
     # =========================================================
     st.subheader("1. 核心参数验证 (Diagnosis)")
 
-    col_d1, col_d2, col_d3 = st.columns(3)
+    col_d1, col_d2, col_d3, col_d4 = st.columns(4) # MODIFIED: Added a column for Target Price
 
     with col_d1:
         st.markdown("**估值偏离度**")
@@ -307,6 +328,16 @@ def page_diagnosis(ticker, window_days):
         st.markdown("**均值回归置信度**")
         st.markdown(f":{conf_color}[**{current_conf:.1f}%**]")
         st.caption(f"{conf_label}", help=f"T-Stat: {current_t_stat:.2f}\n{conf_help}")
+
+    with col_d4: # NEW COLUMN
+        st.markdown("**估值中枢目标价**")
+        if target_price_from_pe is not None and current_P_anchor > 1.0: # Check anchor price validity
+             st.code(f"P_target: {target_price_from_pe:.2f}")
+             st.caption(f"参考加仓点 (1σ): {price_drop_1sd:.2f}",
+                        help=f"这是基于锚定股价 P (${current_P_anchor:.2f}) 预期日波动 (-1σ) 推算的参考加仓点。请在侧边栏更新锚定价格。")
+        else:
+             st.code("P_target: N/A")
+             st.caption("⚠️ 请在侧边栏 **Step 0 参数** 中设置 **当前股价 P (Anchor)** 以计算目标价。")
 
     # --- 历史图表 (Visual Verification) ---
     # Plot 1: PE Context
@@ -442,8 +473,15 @@ def page_solver(P_CURRENT, V_TARGET, V_HARD_FLOOR, V_FILL_PLAN, LAMBDA, SIGMA_AS
         # 允许用户设定补仓时的 K
         # MODIFIED: Default value set to 0.5 per user request (Constant K strategy by default)
         k_fill_target = st.number_input("满仓 K 值 (Target at Fill)",
-                                       min_value=K_FACTOR, max_value=2.0, value=0.5, step=0.1,
+                                       min_value=K_FACTOR, max_value=2.0,
+                                       # [FIX] Use st.session_state.get('k_fill') as default value to maintain state,
+                                       # but fallback to 1.0 if not set yet.
+                                       value=st.session_state.get('k_fill', 1.0),
+                                       step=0.1,
                                        help="当股价跌到 V_fill 时，你愿意使用多大的 K 值？通常设为 0.5 (保持不变) 或 1.0 (激进加仓)。")
+
+    # [FIX] Save k_fill_target back to session state for persistence
+    st.session_state['k_fill'] = k_fill_target
 
 
     # --- 1. 策略配置区 (新增) ---
@@ -1039,6 +1077,7 @@ def page_multi_asset_normalization(max_leverage_cap):
     # FIX: Use the NEW column name '最终仓位 %' because 'Final_Pct' was renamed in the previous step
     df_display['最终仓位 %'] = df_display['最终仓位 %'].apply(lambda x: '**{}**'.format(f'{x:.2%}'))
     df_display['净优势 (ERP)'] = df_display['净优势 (ERP)'].apply(lambda x: f"{x:.2%}")
+    # FIX: Correct the bracket error here from '杠杆 (L)') to '杠杆 (L)']
     df_display['杠杆 (L)'] = df_display['杠杆 (L)'].apply(lambda x: f"{x:.2f}x")
     df_display['LEAPS波动率'] = df_display['LEAPS波动率'].apply(lambda x: f"{x:.2%}")
     df_display['信心 (Alpha)'] = df_display['信心 (Alpha)'].apply(lambda x: f"{x:.3f}")
@@ -1071,7 +1110,8 @@ default_vals = {
     'portfolio_data': [], 'window_days': 90,
     'days_to_expiry': 365, # Default 1 year
     'k_fill': 1.0, # NEW Default Max K for Step 1
-    'total_capital': 100000.0 # NEW Default Capital
+    'total_capital': 100000.0, # NEW Default Capital
+    'P_anchor_global': 180.00 # NEW: Global anchor price for Step 0 calculation
 }
 
 for key, default_val in default_vals.items():
@@ -1094,6 +1134,11 @@ with st.sidebar:
     # --- 1. 输入框 ---
     # 使用 key='ticker_global' 绑定状态
     ticker = st.text_input("股票代码 (Ticker)", value=st.session_state.ticker, key='ticker_global').upper()
+
+    # [NEW INPUT FOR STEP 0] Global price anchor for accurate diagnosis calculation
+    current_P_anchor_global = st.number_input("当前股价 P (Anchor)", value=st.session_state.P_anchor_global, key='P_anchor_global', format="%.2f",
+                                              help="用于在 Step 0 计算 '估值中枢目标价' 和 '参考加仓点' 的股票价格锚点。请确保这是最新的价格。")
+
 
     # --- 2. 自动获取数据逻辑 (Auto-Fetch) ---
     # 定义判断条件：
@@ -1179,7 +1224,10 @@ with st.sidebar:
     current_r_f = st.session_state.r_f
     current_k_factor = st.session_state.k_factor
     current_beta = st.session_state.beta
-    current_P = st.session_state.P
+
+    # [MODIFIED] Use P_anchor_global for all P inputs if not explicitly set in other pages
+    current_P = st.session_state.P_anchor_global
+
     current_V_target = st.session_state.V_target
     current_V_hard = st.session_state.V_hard
     current_V_fill = st.session_state.V_fill
@@ -1221,7 +1269,11 @@ with st.sidebar:
                                          help="【止盈速率/信心衰减】0.2 = 推荐。股价接近目标价时，Alpha 保留 80% 权重。1.0 = 到达目标价即清仓。")
 
             st.subheader("2.2 市场与合约参数")
-            current_P = st.number_input("当前股价 P ($)", value=st.session_state.P, key='P_dash', format="%.2f")
+
+            # [MODIFIED] P input in Step 1 now uses a specific key 'P_dash' and is independent.
+            # We set the P_anchor_global as its default value, but allow local override.
+            current_P = st.number_input("当前股价 P ($)", value=st.session_state.P_anchor_global, key='P_dash', format="%.2f")
+
             current_V_target = st.number_input("目标价 V ($)", value=st.session_state.V_target, key='V_target_dash', format="%.2f",
                                                  help="【公允价值】你认为标的最终应值多少钱？影响预期收益(Drift)。")
             current_V_hard = st.number_input("硬底 V_hard ($)", value=st.session_state.V_hard, key='V_hard_dash', format="%.2f",
@@ -1244,6 +1296,7 @@ with st.sidebar:
             st.session_state.r_f = current_r_f
             st.session_state.k_factor = current_k_factor
             st.session_state.beta = current_beta
+            # [REMOVED] st.session_state.P_anchor_global = current_P  <-- REMOVE THIS LINE
             st.session_state.P = current_P
             st.session_state.V_target = current_V_target
             st.session_state.V_hard = current_V_hard
@@ -1268,7 +1321,10 @@ with st.sidebar:
             # --- END ADDED ---
 
             st.subheader("2.2 市场与定价参数")
-            current_P = st.number_input("当前股价 P ($)", value=st.session_state.P, key='P_solver', format="%.2f")
+
+            # [MODIFIED] Use P_anchor_global as default for P in Solver page
+            current_P = st.number_input("当前股价 P ($)", value=st.session_state.P_anchor_global, key='P_solver', format="%.2f")
+
             current_V_target = st.number_input("目标价 V ($)", value=st.session_state.V_target, key='V_target_solver', format="%.2f")
             current_V_hard = st.number_input("硬底 V_hard ($)", value=st.session_state.V_hard, key='V_hard_solver', format="%.2f")
             current_V_fill = st.number_input("计划补仓价 V_fill ($)", value=st.session_state.V_fill, key='V_fill_solver', format="%.2f")
@@ -1277,6 +1333,7 @@ with st.sidebar:
             st.session_state.r_f = current_r_f
             st.session_state.k_factor = current_k_factor # Update k_factor and beta in session state for consistency
             st.session_state.beta = current_beta
+            # [REMOVED] st.session_state.P_anchor_global = current_P <-- REMOVE THIS LINE
             st.session_state.P = current_P
             st.session_state.V_target = current_V_target
             st.session_state.V_hard = current_V_hard

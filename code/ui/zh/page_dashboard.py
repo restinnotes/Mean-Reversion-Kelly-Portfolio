@@ -192,7 +192,7 @@ def render_page_dashboard(ticker, lambda_val, sigma_val, r_f, k_factor, beta, P,
             if st.button("➕ 保存当前配置到组合", type="primary"):
                 asset_record = {
                     'Ticker': ticker,
-                    'Raw_Kelly_Pct': kelly_ratio_raw, # Save the K=1 raw Kelly ratio for normalization
+                    'Raw_Kelly_Pct': f_cash,
                     'ERP': ERP,
                     'L': L,
                     'k_factor': k_factor,

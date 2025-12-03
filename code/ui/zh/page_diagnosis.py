@@ -1,11 +1,22 @@
 # code/ui/zh/page_diagnosis.py
 
 import streamlit as st
+import os
+import sys
 import numpy as np
 import pandas as pd
-import os
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mtick
+
+# --- Robust Path Setup ---
+# Ensure the project root is in sys.path for direct script execution
+current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root_from_diagnosis = os.path.abspath(os.path.join(current_dir, '..', '..', '..'))
+if project_root_from_diagnosis not in sys.path:
+    sys.path.insert(0, project_root_from_diagnosis)
+if os.path.join(project_root_from_diagnosis, 'code') not in sys.path:
+     sys.path.insert(0, os.path.join(project_root_from_diagnosis, 'code'))
+
 
 # Import Core/Data modules - 修复后的导入，不再手动操作 sys.path
 from core.simulation import run_simulation, analyze_risk_reward

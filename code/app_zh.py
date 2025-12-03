@@ -1,13 +1,12 @@
-# code/app_zh.py
-
 import streamlit as st
 import os
 import sys
 
+
 # ==========================================
 # 1. SETUP: Path & Imports (REVISED)
 # ==========================================
-def get_resource_root():
+def get_project_root():
     """Determines the project root (the directory containing the 'code' folder)."""
     if getattr(sys, 'frozen', False):
         return os.path.dirname(sys.executable)
@@ -17,13 +16,18 @@ def get_resource_root():
         # Go up one level to the project root
         return os.path.abspath(os.path.join(current_dir, ".."))
 
-project_root = get_resource_root()
+project_root = get_project_root()
 
-# === CRITICAL FIX: 确保 'code' 目录被添加到 sys.path 的最前面 ===
-# 'code_base_dir' 就是包含 'core/' 和 'ui/' 的目录。
+# === CRITICAL FIX: 解决 'ModuleNotFoundError: No module named 'core'' ===
+# project_root 是项目根目录 (e.g., .../ProjectRoot/)，包含 'core' 文件夹。
+# 必须将其添加到 sys.path 才能解析 'core.simulation' 等绝对导入。
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
+# code_base_dir 是当前文件所在目录 (e.g., .../ProjectRoot/code/)
+# 确保它也在 sys.path 中，以支持 'ui.X' 等导入。
 code_base_dir = os.path.abspath(os.path.dirname(__file__))
 if code_base_dir not in sys.path:
-    # 插入到位置 0，强制 Python 解释器首先在这里查找模块
     sys.path.insert(0, code_base_dir)
 
 # 现在可以安全地进行绝对导入

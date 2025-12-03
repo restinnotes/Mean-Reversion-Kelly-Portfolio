@@ -19,9 +19,13 @@ def bs_greek_calculator(S, K, T, r, sigma):
     delta = norm.cdf(d1)
 
     # Absolute Daily Theta Decay
+    # BS formula gives Annual Theta. We divide by 252 to get Trading Daily Theta.
     term1 = (S * norm.pdf(d1) * sigma) / (2 * np.sqrt(T))
     term2 = r * K * np.exp(-r * T) * norm.cdf(d2)
-    theta_daily_abs = term1 + term2
+    theta_annual_abs = term1 + term2
+
+    # === 修复: 将年化 Theta 转换为日 Theta (除以 252) ===
+    theta_daily_abs = theta_annual_abs / 252.0
 
     return price, delta, theta_daily_abs
 
@@ -40,6 +44,7 @@ def calculate_single_asset_kelly_ratio(
     L = delta * (P / option_price)
 
     # Annualized Theta Decay Rate (theta_rate)
+    # Assumes input theta_daily_abs is per trading day (1/252 year)
     theta_rate = (theta_daily_abs / option_price) * 252.0
 
     # Equity Risk Premium (ERP)

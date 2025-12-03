@@ -83,7 +83,7 @@ def calculate_ou_params(series, dt=1):
     if results[0] is None: return None
 
     params, residuals, r2, se_params = results
-    # alpha, beta = params # unused
+    alpha, beta = params
     beta = params[1]
     beta_se = se_params[1]
 

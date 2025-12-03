@@ -99,7 +99,7 @@ def render_sidebar():
 
         st.session_state['lambda'] = lambda_val
         st.session_state['sigma'] = sigma_val
-        st.session_state['P_anchor_global'] = current_P_anchor_global # Important for Step 0 calculation
+
 
         # --- Page-specific Input Logic ---
         st.header("2. 策略与市场参数 (动态)")

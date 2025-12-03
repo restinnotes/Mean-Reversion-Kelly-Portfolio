@@ -30,13 +30,13 @@ code_base_dir = os.path.abspath(os.path.dirname(__file__))
 if code_base_dir not in sys.path:
     sys.path.insert(0, code_base_dir)
 
-# 现在可以安全地进行绝对导入
 from config import DEFAULT_APP_PARAMS
 from ui.plot_utils import configure_chinese_font
 from ui.zh.sidebar import render_sidebar
 from ui.zh.page_diagnosis import render_page_diagnosis
 from ui.zh.page_solver import render_page_solver
 from ui.zh.page_dashboard import render_page_dashboard, render_page_multi_asset_normalization
+from ui.zh.page_glossary import render_page_glossary
 
 # ==========================================
 # 2. MAIN APP ROUTER
@@ -118,3 +118,6 @@ elif page == "Step 1: 主仓位计算器":
 elif page == "Step 2: 多标的组合管理":
     max_leverage_cap = st.session_state.get('max_leverage_cap', 1.0)
     render_page_multi_asset_normalization(max_leverage_cap)
+
+elif page == "📚 术语与原理速查":
+    render_page_glossary()

@@ -3,9 +3,9 @@
 import streamlit as st
 import os
 import sys
-import json # <--- 新增导入
+import json
 
-# Import Data/Config modules - 修复后的导入，不再手动操作 sys.path
+# Import Data/Config modules
 from data.fetcher import get_ou_for_ticker, get_sigma
 from config import DEFAULT_LAMBDA, DEFAULT_SIGMA
 from ui.plot_utils import get_resource_root
@@ -37,17 +37,15 @@ def render_sidebar():
             ]
 
             # 1. 导出
-            # 过滤掉 None 值，确保 JSON 序列化安全
             current_config = {}
             for k in config_keys:
                 if k in st.session_state:
                     val = st.session_state[k]
                     try:
-                        # 尝试序列化，跳过不可序列化的对象（如自定义的DataFrame或复杂对象）
                         json.dumps(val)
                         current_config[k] = val
                     except:
-                        pass # 跳过不可序列化的对象
+                        pass
 
             json_str = json.dumps(current_config, indent=4, ensure_ascii=False)
 
@@ -87,8 +85,15 @@ def render_sidebar():
 
         # --- 1. 输入框 ---
         ticker = st.text_input("股票代码 (Ticker)", value=st.session_state.ticker, key='ticker_global').upper()
-        current_P_anchor_global = st.number_input("当前股价 P (Anchor)", value=st.session_state.P_anchor_global, key='P_anchor_global', format="%.2f",
-                                                 help="用于在 Step 0 计算 '估值中枢目标价' 和 '参考加仓点' 的股票价格锚点。请确保这是最新的价格。")
+
+        # [MODIFIED] 修改了说明，强调这是唯一的全局价格输入
+        current_P_anchor_global = st.number_input(
+            "当前股价 P ($)",
+            value=st.session_state.P_anchor_global,
+            key='P_anchor_global',
+            format="%.2f",
+            help="全局统一的当前标的价格。用于 Step 0 的估值计算以及 Step 1 的凯利公式计算。"
+        )
 
         # --- 2. 自动获取数据逻辑 (Auto-Fetch) ---
         need_refresh = (ticker != st.session_state.get('last_fetched_ticker')) or \
@@ -101,8 +106,6 @@ def render_sidebar():
                     with st.spinner(f"正在自动计算 {ticker} 的历史波动率与回归参数..."):
 
                         ou_window = st.session_state.get('window_days', 90)
-
-                        # Pass project_root to get_ou_for_ticker
                         ou = get_ou_for_ticker(ticker, project_root, window=ou_window)
 
                         new_lambda = DEFAULT_LAMBDA
@@ -126,8 +129,7 @@ def render_sidebar():
                 except Exception as e:
                     st.error(f"❌ 数据获取失败: {e}")
             else:
-                # 理论上不会发生，因为 app_zh.py 应该能导入 fetcher
-                st.error("依赖模块 (lambda_tools.py / sigma_tools.py) 未导入，无法获取历史数据。")
+                st.error("依赖模块未导入，无法获取历史数据。")
 
         # --- 3. 如果数据已就绪，显示简报 ---
         current_lambda_val = st.session_state.get('lambda')
@@ -147,7 +149,7 @@ def render_sidebar():
 
         st.divider()
 
-        # Update Session State from inputs (even if auto-fetched, user can override)
+        # Update Session State from inputs
         lambda_val = st.number_input("年化 Lambda (λ)", value=current_lambda_val if current_lambda_val is not None else DEFAULT_LAMBDA, key='lambda_global', format="%.4f",
                                      help="【均值回归动力】数值越大，修复越快。若图表显示 Lambda 处于历史极高位(>80分位)，建议手动调低以提高安全边际。")
         sigma_val = st.number_input("年化 Sigma (σ)", value=current_sigma_val if current_sigma_val is not None else DEFAULT_SIGMA, key='sigma_global', format="%.4f",
@@ -164,7 +166,10 @@ def render_sidebar():
         current_r_f = st.session_state.get('r_f', 0.037)
         current_k_factor = st.session_state.get('k_factor', 0.50)
         current_beta = st.session_state.get('beta', 0.20)
-        current_P = st.session_state.get('P', current_P_anchor_global)
+
+        # [MODIFIED] 这里的 current_P 默认取全局 anchor
+        current_P = current_P_anchor_global
+
         current_V_target = st.session_state.get('V_target', 225.00)
         current_V_hard = st.session_state.get('V_hard', 130.00)
         current_V_fill = st.session_state.get('V_fill', 145.00)
@@ -182,6 +187,7 @@ def render_sidebar():
             st.subheader("诊断特有参数")
             window_days = st.slider("滚动窗口 (交易日)", min_value=30, max_value=252, value=current_window_days, key='window_days_diag')
             st.session_state['window_days'] = window_days
+
         elif page in ["Step 1: 主仓位计算器", "Step 0.5: 最优期限求解"]:
             st.subheader("2.1 策略约束")
             if page == "Step 1: 主仓位计算器":
@@ -197,7 +203,11 @@ def render_sidebar():
                                          help="【止盈速率/信心衰减】0.2 = 推荐。股价接近目标价时，Alpha 保留 80% 权重。1.0 = 到达目标价即清仓。")
 
             st.subheader("2.2 市场与合约参数")
-            current_P = st.number_input("当前股价 P ($)", value=current_P_anchor_global, key='P_dash', format="%.2f")
+
+            # [MODIFIED] 移除了原本在这里的 current_P 输入框 (key='P_dash')
+            # 强制使用全局 Anchor 价格，消除冗余
+            current_P = current_P_anchor_global
+
             current_V_target = st.number_input("目标价 V ($)", value=current_V_target, key='V_target_dash', format="%.2f", help="【公允价值】你认为标的最终应值多少钱？影响预期收益(Drift)。")
             current_V_hard = st.number_input("硬底 V_hard ($)", value=current_V_hard, key='V_hard_dash', format="%.2f", help="【止损锚点】极端悲观下绝对不会跌破的价格。建议买入 Strike 接近此价格的期权，物理锁死尾部风险。")
             current_V_fill = st.number_input("计划补仓价 V_fill ($)", value=current_V_fill, key='V_fill_dash', format="%.2f", help="【满仓线】当股价跌至此价格时，总仓位将提升至 1.0K 的理论最大值。")
@@ -214,7 +224,10 @@ def render_sidebar():
             st.session_state.r_f = current_r_f
             st.session_state.k_factor = current_k_factor
             st.session_state.beta = current_beta
+
+            # [MODIFIED] 确保保存到 Session State 的 P 是全局 Anchor
             st.session_state.P = current_P
+
             st.session_state.V_target = current_V_target
             st.session_state.V_hard = current_V_hard
             st.session_state.V_fill = current_V_fill

@@ -1,166 +1,73 @@
+# code/ui/zh/page_dashboard.py
+
 import streamlit as st
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mtick
 
-# Import Core modules (assuming these exist)
-# from core.kelly import calculate_kelly_for_dashboard, calculate_dynamic_kelly_path, calculate_grid_signals
-# from core.risk import calculate_stress_test
-# from core.normalization import normalize_portfolio
-# For file generation, I will include mock functions for core modules to make the code runnable and complete.
+# 尝试导入 Core 模块
+# 如果某些函数在 core 中不存在，脚本将使用本地逻辑或报错
+try:
+    from core.kelly import calculate_kelly_for_dashboard, calculate_dynamic_kelly_path, calculate_grid_signals
+    from core.risk import calculate_stress_test
+except ImportError:
+    st.error("无法导入 core 模块，请确保 core 文件夹及 __init__.py 存在，且包含 kelly.py 和 risk.py。")
+    st.stop()
 
-# --- MOCK CORE FUNCTIONS (For self-contained file generation) ---
-def calculate_kelly_for_dashboard(P, V_target, V_hard, V_fill, opt_price, delta, theta, lambda_val, sigma_val, r_f, beta, k_factor, k_fill, total_capital):
-    L = 10.0 if opt_price > 0 else 0
-    sigma_leaps = L * sigma_val
-    ERP = L * lambda_val - r_f - theta * 365.25 # Annualized
-    alpha = 1 - beta * ((P - V_hard) / (V_target - V_hard)) if V_target != V_hard else 1.0
-    alpha = np.clip(alpha, 1 - beta, 1.0)
-
-    kelly_ratio_raw = np.clip((ERP / sigma_leaps**2) * alpha * k_factor, 0, 1.0)
-
-    if ERP < 0 or opt_price <= 0:
-        f_cash = 0.0
+# ==========================================
+# 本地辅助函数：高级分组归一化逻辑
+# (内置于此以确保 Dashboard 功能完整，不依赖外部 normalization.py 的版本)
+# ==========================================
+def normalize_portfolio_with_grouping(df_input, max_leverage_cap):
+    """
+    执行基于分组的资金分配：
+    1. 组间：平均分配总资金 (Total Cap / N Groups)
+    2. 组内：根据 (Raw Kelly * Confidence) 的权重分配
+    """
+    if isinstance(df_input, list):
+        df = pd.DataFrame(df_input)
+    elif isinstance(df_input, pd.DataFrame):
+        df = df_input.copy()
     else:
-        f_cash = kelly_ratio_raw
-
-    contract_cost = opt_price * 100
-    target_contracts_float = (f_cash * total_capital) / contract_cost if contract_cost > 0 else 0
-    target_contracts = int(np.round(target_contracts_float))
-
-    return {
-        'f_cash': f_cash,
-        'target_contracts': target_contracts,
-        'target_contracts_float': target_contracts_float,
-        'contract_cost': contract_cost,
-        'ERP': ERP,
-        'L': L,
-        'alpha': alpha,
-        'sigma_leaps': sigma_leaps,
-        'k_factor_used': k_factor,
-        'kelly_ratio_raw': kelly_ratio_raw
-    }
-
-def calculate_dynamic_kelly_path(P, V_target, V_hard, V_fill, lambda_val, sigma_val, r_f, beta, k_factor, k_fill, total_capital, days_to_expiry, iv_pricing):
-    sim_prices = np.linspace(V_hard * 0.9, V_target * 1.1, 100)
-    allocations = []
-    k_values = []
-    contracts_series = []
-
-    current_contract_cost = 1000 # Mock value
-
-    for price in sim_prices:
-        # Mock calculation: k increases as price falls
-        k_current = k_factor + (k_fill - k_factor) * np.clip((P - price) / (P - V_hard), 0, 1)
-        k_values.append(k_current)
-
-        L_mock = 10.0 # Mock L
-        sigma_leaps_mock = L_mock * sigma_val
-        ERP_mock = L_mock * lambda_val - r_f - 0.05 # Mock ERP
-
-        alpha_mock = 1 - beta * ((price - V_hard) / (V_target - V_hard)) if V_target != V_hard else 1.0
-        alpha_mock = np.clip(alpha_mock, 0.0, 1.0) # Clip alpha
-
-        kelly_ratio_raw_mock = np.clip((ERP_mock / sigma_leaps_mock**2) * alpha_mock * k_current, 0, 1.0)
-
-        if ERP_mock < 0:
-            alloc = 0.0
-        elif price > V_target: # Stop loss/take profit
-             alloc = 0.0
-        else:
-            alloc = kelly_ratio_raw_mock
-
-        allocations.append(alloc)
-
-        target_contracts_float = (alloc * total_capital) / current_contract_cost if current_contract_cost > 0 else 0
-        contracts_series.append(target_contracts_float)
-
-    return sim_prices, np.array(allocations), np.array(k_values), np.array(contracts_series)
-
-def calculate_grid_signals(sim_prices, contracts_series, current_holdings, P, step_size_pct=0.1):
-    buy_points = []
-    sell_points = []
-
-    if len(contracts_series) == 0:
-        return buy_points, sell_points, 0
-
-    max_contracts = max(contracts_series)
-    step_size = max(1, int(np.round(max_contracts * step_size_pct)))
-
-    # Buy signals (price drop)
-    for i in range(1, 5):
-        target_contracts = current_holdings + i * step_size
-
-        # Find price where target contracts is reached
-        idx = np.argmin(np.abs(contracts_series - target_contracts))
-        price = sim_prices[idx]
-
-        if price < P and target_contracts < max_contracts * 1.05 and target_contracts > current_holdings:
-            buy_points.append({'price': price, 'target_hold': target_contracts, 'step': step_size})
-
-    # Sell signals (price rise)
-    for i in range(1, 3):
-        target_contracts = current_holdings - i * step_size
-
-        idx = np.argmin(np.abs(contracts_series - target_contracts))
-        price = sim_prices[idx]
-
-        if price > P and target_contracts > 0 and target_contracts < current_holdings:
-            sell_points.append({'price': price, 'target_hold': target_contracts, 'step': step_size})
-
-    return buy_points, sell_points, step_size
-
-def calculate_stress_test(f_cash, L, sigma_val, total_capital):
-    drops = [-0.01, -0.02, -0.05, -0.10, -0.20] # 1%, 2%, 5%, 10%, 20%
-    data = []
-    for d in drops:
-        # Mock LEAPS drop based on leverage L
-        leaps_drop = d * L
-
-        # Account drawdown: f_cash * leaps_drop
-        account_drawdown = f_cash * leaps_drop
-
-        # Estimated loss
-        estimated_loss = total_capital * abs(account_drawdown)
-
-        data.append({
-            '标的跌幅': d,
-            'LEAPS 预估跌幅': leaps_drop,
-            '账户总净值回撤': account_drawdown,
-            '预估亏损': estimated_loss
-        })
-
-    return pd.DataFrame(data)
-
-def normalize_portfolio(df, max_leverage_cap):
-    if df.empty:
-        # Returns df_result, total_raw, scale_factor, group_stats
         return pd.DataFrame(), 0.0, 1.0, pd.DataFrame()
 
-    # 1. Calculate the base score (Weighted Kelly) for internal weighting
-    # Score = Raw Kelly * User Confidence
+    if df.empty:
+        return pd.DataFrame(), 0.0, 1.0, pd.DataFrame()
+
+    # 1. 计算加权分数
+    # 如果没有 User_Confidence，默认为 1.0
+    if 'User_Confidence' not in df.columns:
+        df['User_Confidence'] = 1.0
+
+    # 确保 Raw_Kelly_Pct 是浮点数
+    df['Raw_Kelly_Pct'] = df['Raw_Kelly_Pct'].astype(float)
+
+    # Score = 原始建议 * 用户信心
     df['Weighted_Kelly_Score'] = df['Raw_Kelly_Pct'] * df['User_Confidence']
 
-    # Identify unique groups and number of groups
+    # 2. 识别分组
+    if 'Group' not in df.columns:
+        df['Group'] = 'Default'
+
+    # 填充空分组
+    df['Group'] = df['Group'].fillna('Default').replace('', 'Default')
+
     unique_groups = df['Group'].nunique()
-    if unique_groups == 0:
-        return pd.DataFrame(), 0.0, 1.0, pd.DataFrame()
 
-    # 2. Determine equal allocation target per group: Cap_Group = max_leverage_cap / N_groups
-    target_cap_per_group = max_leverage_cap / unique_groups
+    # 3. 确定每组的目标资金上限
+    target_cap_per_group = max_leverage_cap / unique_groups if unique_groups > 0 else 0
 
-    # 3. Calculate total weighted score per group (for internal distribution)
-    # This sum (Group_Weighted_Total) will be used as the internal denominator
+    # 4. 计算组内总分 (Group Weighted Total)
     group_totals = df.groupby('Group')['Weighted_Kelly_Score'].sum().reset_index(name='Group_Weighted_Total')
 
-    # Calculate group 'Ask' (Mean Raw Kelly) for display/context
-    group_ask_mean = df.groupby('Group')['Raw_Kelly_Pct'].mean().reset_index(name='Group_Ask')
+    # 计算组内原始需求均值 (用于展示)
+    group_ask_mean = df.groupby('Group')['Raw_Kelly_Pct'].mean().reset_index(name='Group_Ask_Mean')
 
-    # Merge the weighted totals back to the main DataFrame
+    # 合并数据
     df = pd.merge(df, group_totals, on='Group', how='left')
 
-    # 4. Perform allocation: Final Pct = Group Cap * (Individual Weighted Score / Group Total Weighted Score)
+    # 5. 分配核心逻辑
     def calculate_final_pct(row):
         group_total = row['Group_Weighted_Total']
         weighted_score = row['Weighted_Kelly_Score']
@@ -168,29 +75,39 @@ def normalize_portfolio(df, max_leverage_cap):
         if group_total == 0:
             return 0.0
 
-        # Final Pct = (Target Cap for Group) * (Asset's weighted score / Group's total weighted score)
-        return target_cap_per_group * (weighted_score / group_total)
+        # 组内分配比例 = 个体分数 / 组总分
+        internal_ratio = weighted_score / group_total
+
+        # 最终仓位 = 组上限 * 组内比例
+        return target_cap_per_group * internal_ratio
 
     df['Final_Pct'] = df.apply(calculate_final_pct, axis=1)
 
-    # 5. Recalculate summary metrics for return
-    total_final_alloc = df['Final_Pct'].sum()
+    # 6. 计算统计数据
     total_raw_old = df['Raw_Kelly_Pct'].sum()
+    total_final_alloc = df['Final_Pct'].sum()
 
-    # The effective scale factor is the ratio of total actual allocation to the maximum theoretical ask (sum of all raw Kelly)
+    # 缩放系数 (仅供参考：实际分配 / 原始总需求)
+    # 注意：在分组逻辑下，Scale Factor 对每个资产是不同的，这里给出一个整体参考值
     total_weighted_ask = df['Weighted_Kelly_Score'].sum()
     scale_factor = total_final_alloc / total_weighted_ask if total_weighted_ask > 0 else 1.0
 
-    # Create the group statistics DataFrame
+    # 生成 Group Stats 表格
     group_stats = group_totals.merge(group_ask_mean, on='Group')
     group_stats['Asset_Count'] = df.groupby('Group').size().values
-    group_stats['Group_Allocated'] = df.groupby('Group')['Final_Pct'].sum().values
 
-    group_stats.rename(columns={'Group_Ask_Mean': 'Group_Ask'}, inplace=True) # Ensure 'Group_Ask' is used as the mean for display
+    # 计算每组实际分配的总和
+    group_allocated = df.groupby('Group')['Final_Pct'].sum().reset_index(name='Group_Allocated')
+    group_stats = group_stats.merge(group_allocated, on='Group')
+
+    # 重命名方便展示
+    group_stats.rename(columns={'Group_Ask_Mean': 'Group_Ask'}, inplace=True)
 
     return df, total_raw_old, scale_factor, group_stats
-# -----------------------------------------------------------------
 
+# ==========================================
+# 页面渲染函数
+# ==========================================
 
 def render_page_dashboard(ticker, lambda_val, sigma_val, r_f, k_factor, beta, P, V_target, V_hard, opt_price, delta, theta, V_fill, iv_pricing, days_to_expiry, k_fill, total_capital):
     st.title("🌌 Step 1: 凯利 LEAPS 仓位主计算器")
@@ -199,7 +116,7 @@ def render_page_dashboard(ticker, lambda_val, sigma_val, r_f, k_factor, beta, P,
     # --- User Guide ---
     with st.expander("❓ Step 1：核心目标 (买多少？)"):
         st.markdown("""
-            本计算器是系统的**核心步骤**。它将**均值回归动力** ($\lambda$) 与 **LEAPS 的杠杆风险** ($L^2\sigma\textsuperscript{2}$) 相结合，计算出在您设定的风险偏好 (k) 和信心 ($\\alpha$) 下，能够**最大化长期几何增长率**的现金投入比例。
+            本计算器是系统的**核心步骤**。它将**均值回归动力** ($\lambda$) 与 **LEAPS 的杠杆风险** ($L^2\sigma^2$) 相结合，计算出在您设定的风险偏好 (k) 和信心 ($\\alpha$) 下，能够**最大化长期几何增长率**的现金投入比例。
             **核心判断：** 确保 **净优势 (ERP)** 为正值。如果 ERP < 0，即使是理论上最优的杠杆，也无法覆盖期权的租金成本 ($\\theta$) 和无风险利率 ($r_f$)，应避免开仓。
             *输入前，请确保您已从 Step 0 或券商处获取了**准确的合约数据**。*
         """)
@@ -221,8 +138,8 @@ def render_page_dashboard(ticker, lambda_val, sigma_val, r_f, k_factor, beta, P,
     L = kelly_results['L']
     alpha = kelly_results['alpha']
     sigma_leaps = kelly_results['sigma_leaps']
-    k_factor_used = kelly_results['k_factor_used']
-    kelly_ratio_raw = kelly_results['kelly_ratio_raw']
+    # k_factor_used = kelly_results['k_factor_used']
+    # kelly_ratio_raw = kelly_results['kelly_ratio_raw']
 
     # --- Display Results ---
     col_d, col_m = st.columns([1, 2])
@@ -270,7 +187,7 @@ def render_page_dashboard(ticker, lambda_val, sigma_val, r_f, k_factor, beta, P,
         st.write(f"**LEAPS 年化波动率:** {sigma_leaps:.2%}")
 
     with col_m:
-        # --- Dynamic Kelly Path Logic (NEW) ---
+        # --- Dynamic Kelly Path Logic ---
         st.subheader("🔮 动态 K 值仓位路径推演 (含网格买卖点)")
         st.caption(f"全景推演：下跌 K 值增强 ({k_factor:.2f}$\\to${k_fill:.2f})，上涨时自动止盈。")
 
@@ -320,9 +237,11 @@ def render_page_dashboard(ticker, lambda_val, sigma_val, r_f, k_factor, beta, P,
         plt.close(fig)
 
         # --- Grid Trading Advice ---
+        # 注意：使用 contracts_series 的最大值来判断
+        max_contracts_sim = np.max(contracts_series) if len(contracts_series) > 0 else 0
         buy_points, sell_points, step_size = calculate_grid_signals(sim_prices, contracts_series, target_contracts, P)
 
-        st.info(f"💡 **网格操作提示** (检测到最大持仓约 {int(max(contracts_series) if contracts_series.size > 0 else 0)} 张，已自动将提示步长设为 **{step_size}** 张):")
+        st.info(f"💡 **网格操作提示** (检测到最大持仓约 {int(max_contracts_sim)} 张，已自动将提示步长设为 **{step_size}** 张):")
 
         col_buy, col_sell = st.columns(2)
         with col_buy:
@@ -341,16 +260,13 @@ def render_page_dashboard(ticker, lambda_val, sigma_val, r_f, k_factor, beta, P,
                 for point in sell_points:
                     st.write(f"- 涨至 **${point['price']:.2f}** : 减至 **{int(point['target_hold'])}** 张 (-{point['step']}张)")
 
-
         st.markdown("---")
-
 
         # --- G. Stress Test ---
         st.subheader("⚠️ 压力测试 (Stress Test) - 账户净值模拟")
         st.caption(f"基于当前建议仓位 ({f_cash:.2%}) 的次日盈亏模拟")
 
         with st.expander("📊 点击展开：如果明天发生暴跌，我的账户将承受？", expanded=True):
-            # Calculate stress test data
             risk_df = calculate_stress_test(f_cash, L, sigma_val, total_capital)
 
             # Format for display
@@ -361,7 +277,7 @@ def render_page_dashboard(ticker, lambda_val, sigma_val, r_f, k_factor, beta, P,
             risk_df_display['预估亏损'] = risk_df_display['预估亏损'].apply(lambda x: f"${x:,.0f}" if x >= 0 else f"-${abs(x):,.0f}")
 
             st.table(risk_df_display)
-            st.caption("*注：此处使用有效杠杆 (L) 进行线性估算，实际期权在暴跌中的跌幅可能因 Gamma/Vega 效应有所不同。仅供风控参考。如果 $3\\sigma$ 亏损额让你感到恐慌，请在侧边栏调低 $k$ 值。")
+            st.caption("*注：此处使用有效杠杆 (L) 进行线性估算，实际期权在暴跌中的跌幅可能因 Gamma/Vega 效应有所不同。仅供风控参考。")
 
 
         # --- Save to Portfolio Feature ---
@@ -371,7 +287,7 @@ def render_page_dashboard(ticker, lambda_val, sigma_val, r_f, k_factor, beta, P,
 
             col_save1, col_save2 = st.columns([1, 3])
             with col_save1:
-                # [修改点]：改为自定义分组输入
+                # [自定义分组输入]
                 group_name = st.text_input(
                     "自定义分组 (Group)",
                     value="默认分组",
@@ -384,32 +300,33 @@ def render_page_dashboard(ticker, lambda_val, sigma_val, r_f, k_factor, beta, P,
                 if st.button("➕ 保存当前配置到组合", type="primary"):
                     asset_record = {
                         'Ticker': ticker,
-                        'Group': group_name, # <--- 保存 Group 字段
+                        'Group': group_name, # 保存 Group 字段
                         'Raw_Kelly_Pct': f_cash,
                         'ERP': ERP,
                         'L': L,
                         'k_factor': k_factor,
-                        'Alpha': alpha, # <--- 确保 Alpha (信心系数) 被保存为 User_Confidence 的初始参考
+                        'Alpha': alpha, # 保存 Alpha 作为参考
                         'P': P,
                         'V_target': V_target,
                         'V_hard': V_hard,
-                        'V_fill': V_fill, # 确保 V_fill 也被保存，以便在 Step 2 中查看
+                        'V_fill': V_fill,
                         'Sigma_Leaps': sigma_leaps
                     }
 
-                    existing_tickers = [item['Ticker'] for item in st.session_state.get('portfolio_data', [])]
+                    if 'portfolio_data' not in st.session_state:
+                        st.session_state['portfolio_data'] = []
+
+                    existing_tickers = [item['Ticker'] for item in st.session_state['portfolio_data']]
 
                     if ticker in existing_tickers:
                         idx = existing_tickers.index(ticker)
                         st.session_state['portfolio_data'][idx] = asset_record
                         st.success(f"✅ 已更新 {ticker} 的组合数据 (分组: {group_name})")
                     else:
-                        if 'portfolio_data' not in st.session_state:
-                            st.session_state['portfolio_data'] = []
                         st.session_state['portfolio_data'].append(asset_record)
                         st.success(f"✅ 已将 {ticker} 添加到组合 (分组: {group_name})")
 
-                    st.info(f"当前组合共有 {len(st.session_state.get('portfolio_data', []))} 个标的")
+                    st.info(f"当前组合共有 {len(st.session_state['portfolio_data'])} 个标的")
 
 
 def render_page_multi_asset_normalization(max_leverage_cap):
@@ -441,7 +358,7 @@ def render_page_multi_asset_normalization(max_leverage_cap):
         else:
             df['User_Confidence'] = 1.0
 
-        # NOTE: Update session state with the new column structure for persistence
+        # 更新 session state
         st.session_state['portfolio_data'] = df.to_dict('records')
 
     # 2. 按分组排序，改善用户体验
@@ -456,16 +373,15 @@ def render_page_multi_asset_normalization(max_leverage_cap):
     column_config = {
         "Ticker": st.column_config.TextColumn("代码", disabled=True),
         "Group": st.column_config.TextColumn("分组", disabled=True),
-        # 原始建议百分比显示为两位小数
         "Raw_Kelly_Pct": st.column_config.NumberColumn("原始建议 %", format="%.2f", disabled=True),
         "User_Confidence": st.column_config.NumberColumn(
             "信心权重",
             help="1.0=基准。最终 Score = 原始建议 * 信心。",
             min_value=0.0, max_value=5.0, step=0.05, format="%.2f"
         ),
-        "Alpha": st.column_config.NumberColumn("参考 Alpha (系统计算)", format="%.3f", disabled=True),
-        "ERP": st.column_config.NumberColumn("净优势 (ERP)", format="%.1f%%", disabled=True),
-        "L": st.column_config.NumberColumn("杠杆 (L)", format="%.2fx", disabled=True),
+        "Alpha": st.column_config.NumberColumn("参考 Alpha", format="%.3f", disabled=True),
+        "ERP": st.column_config.NumberColumn("ERP", format="%.1f%%", disabled=True),
+        "L": st.column_config.NumberColumn("杠杆", format="%.2fx", disabled=True),
     }
 
     display_columns = ['Group', 'Ticker', 'Raw_Kelly_Pct', 'User_Confidence', 'Alpha', 'ERP', 'L']
@@ -480,12 +396,11 @@ def render_page_multi_asset_normalization(max_leverage_cap):
         key='portfolio_editor'
     )
 
-    # 将编辑后的 User_Confidence 字段合并回原始 DataFrame 以进行归一化计算
+    # 将编辑后的 User_Confidence 字段合并回原始 DataFrame
     df['User_Confidence'] = edited_df['User_Confidence']
 
-    # --- 核心计算 ---
-    # normalize_portfolio 现在返回 4 个值：df_result, total_raw, scale_factor, group_stats
-    df_result, total_raw, scale_factor, group_stats = normalize_portfolio(df, max_leverage_cap)
+    # --- 核心计算 (使用本地增强版函数) ---
+    df_result, total_raw, scale_factor, group_stats = normalize_portfolio_with_grouping(df, max_leverage_cap)
 
     if df_result.empty:
         st.warning("计算结果为空，请检查数据。")
@@ -499,7 +414,7 @@ def render_page_multi_asset_normalization(max_leverage_cap):
     st.subheader("2. 结果验证")
 
     with st.expander("📊 分组统计验证 (点击展开)", expanded=True):
-        st.caption("验证逻辑：注意看 **'组获配资金'** 列，它应该在各个分组间是相等的（总上限 / 组数）。")
+        st.caption("验证逻辑：注意看 **'组获配资金'** 列，它应该在各个分组间是基本相等的（总上限 / 组数）。")
 
         group_display = group_stats.copy()
         # 格式化
@@ -512,7 +427,7 @@ def render_page_multi_asset_normalization(max_leverage_cap):
             column_config={
                 "Group": "分组名称",
                 "Asset_Count": "资产数",
-                "Group_Ask": "组内原始建议 (均值)", # 修正标签，表示组内资产原始 Kelly 的平均
+                "Group_Ask": "组内原始建议(均值)",
                 "Group_Allocated": "组获配资金"
             },
             hide_index=True,
@@ -520,10 +435,7 @@ def render_page_multi_asset_normalization(max_leverage_cap):
         )
 
         if scale_factor < 1.0:
-            st.info(f"💰 缩放系数: {scale_factor:.4f} (总加权需求被归一化到总上限)")
-        else:
-            st.info(f"缩放系数: {scale_factor:.4f} (总加权需求低于总上限)")
-
+            st.info(f"💰 缩放系数参考: {scale_factor:.4f}")
 
     col_res1, col_res2 = st.columns([1, 1])
 
@@ -554,22 +466,20 @@ def render_page_multi_asset_normalization(max_leverage_cap):
     with col_res2:
         st.write("##### 资金饼图")
 
-        # 绘制饼图
         if total_final_alloc > 0:
             # 准备饼图数据
-            plot_df = df_result[df_result['Final_Pct'] > 0.001].copy() # 过滤掉太小的
-            labels = plot_df['Ticker']
-            sizes = plot_df['Final_Pct']
+            plot_df = df_result[df_result['Final_Pct'] > 0.001].copy()
+            labels = plot_df['Ticker'].tolist()
+            sizes = plot_df['Final_Pct'].tolist()
 
             # 如果没满仓，显示现金/剩余部分
             remaining = max_leverage_cap - total_final_alloc
             if remaining > 0.001:
-                labels = list(labels) + ['现金 / 剩余额度']
-                sizes = list(sizes) + [remaining]
+                labels.append('现金 / 剩余额度')
+                sizes.append(remaining)
 
-                # 调整颜色，让 Cash 显得中性
                 colors = plt.cm.Paired(np.arange(len(labels)))
-                colors[-1] = (0.7, 0.7, 0.7, 1.0)
+                colors[-1] = (0.7, 0.7, 0.7, 1.0) # 灰色表示现金
             else:
                 colors = plt.cm.Paired(np.arange(len(labels)))
 
@@ -583,15 +493,14 @@ def render_page_multi_asset_normalization(max_leverage_cap):
                 wedgeprops={'linewidth': 0.5, 'edgecolor': 'white'}
             )
 
-            # 使用 legend 而不是 labels 直接在饼图上
             ax.legend(wedges, labels,
                       title="标的",
                       loc="center left",
                       bbox_to_anchor=(1, 0, 0.5, 1))
 
-            ax.set_title(f"组合资金分配 (基于 Cap={max_leverage_cap*100:.0f}%)", fontsize=14)
+            ax.set_title(f"组合资金分配 (Cap={max_leverage_cap:.0%})", fontsize=14)
             st.pyplot(fig)
-            plt.close(fig) # 及时关闭 figure 释放内存
+            plt.close(fig)
         else:
             st.info("暂无分配结果")
 

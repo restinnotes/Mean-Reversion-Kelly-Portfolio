@@ -1,24 +1,13 @@
 # code/ui/zh/page_diagnosis.py
 
 import streamlit as st
-import os
-import sys
 import numpy as np
 import pandas as pd
+import os
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mtick
 
-# --- Robust Path Setup ---
-# Ensure the project root is in sys.path for direct script execution
-current_dir = os.path.dirname(os.path.abspath(__file__))
-project_root_from_diagnosis = os.path.abspath(os.path.join(current_dir, '..', '..', '..'))
-if project_root_from_diagnosis not in sys.path:
-    sys.path.insert(0, project_root_from_diagnosis)
-if os.path.join(project_root_from_diagnosis, 'code') not in sys.path:
-     sys.path.insert(0, os.path.join(project_root_from_diagnosis, 'code'))
-
-
-# Import Core/Data modules - 修复后的导入，不再手动操作 sys.path
+# 导入核心/数据模块
 from core.simulation import run_simulation, analyze_risk_reward
 from data.rolling import run_rolling_analysis
 from ui.plot_utils import get_resource_root
@@ -31,7 +20,7 @@ def render_page_diagnosis(ticker, window_days, lambda_val, sigma_val, P_anchor_g
     st.subheader(f"资产: {ticker} | 滚动窗口: {window_days} 交易日")
     st.markdown("---")
 
-    # --- User Guide: 融合了原版的参数警示与新版的分布思维 ---
+    # --- 用户指南：核心逻辑 ---
     with st.expander("❓ Step 0 核心逻辑：先验证参数，再推演未来", expanded=True):
         st.markdown("""
             **在使用任何模型前，必须完成以下两步逻辑闭环：**
@@ -41,7 +30,7 @@ def render_page_diagnosis(ticker, window_days, lambda_val, sigma_val, P_anchor_g
             * **Sigma (波动率)**：确认我们使用的是稳健的波动率（通常是历史 85% 分位数），确保在计算风险时足够保守。
 
             **第二步：分布推演 (Simulation)**
-            * **假设前提**：*“如果估值回归真的按照上述历史规律运行...”*
+            * **假设前提**：*“如果估值中枢回归真的按照上述历史规律运行...”*
             * **盈亏分布**：看清楚 **10%底线 (Hold Risk)** 和 **10%高点 (Touch Gain)**。
             * **决策**：只有当 Lambda 真实可靠，且蒙特卡洛推演出的“底线风险”你能承受时，才能进入 Step 1 开仓。
         """)
@@ -63,6 +52,40 @@ def render_page_diagnosis(ticker, window_days, lambda_val, sigma_val, P_anchor_g
 
     df = analysis_data['df']
     rolling_df = analysis_data['rolling_df']
+
+    # ================= [更稳健的日期索引修复 v2] =================
+    # 1. 检查索引是否已经是日期 (如果是，跳过)
+    if not isinstance(df.index, pd.DatetimeIndex):
+        # 2. 尝试寻找日期列 (不区分大小写，覆盖 'Date', 'date', 'Time' 等常见名)
+        found_date_col = None
+        for col in df.columns:
+            if str(col).lower() in ['date', 'time', 'datetime', 'trade_date', 'timestamp']:
+                found_date_col = col
+                break
+
+        if found_date_col:
+            # 情况 A: 找到了名为 Date/date 的列 -> 转为索引
+            df[found_date_col] = pd.to_datetime(df[found_date_col])
+            df.set_index(found_date_col, inplace=True)
+        else:
+            # 情况 B: 没找到列，检查索引是否看起来像日期字符串 (而非数字)
+            # 只有当索引不是纯数字时，才尝试转换
+            is_numeric = pd.api.types.is_numeric_dtype(df.index)
+            if not is_numeric:
+                try:
+                    df.index = pd.to_datetime(df.index)
+                except:
+                    pass # 转换失败则放弃，避免报错
+            # 如果是纯数字索引，保持原样，千万不要转成 1970
+
+    # 同步确保 rolling_df 也是日期索引（通常 run_rolling_analysis 已经处理好了，这里做二次检查更稳健）
+    if not rolling_df.empty and not isinstance(rolling_df.index, pd.DatetimeIndex):
+        try:
+            rolling_df.index = pd.to_datetime(rolling_df.index)
+        except:
+            pass
+    # ============================================================
+
     metrics = analysis_data['current_metrics']
     robust_stats = analysis_data['robust_stats']
 
@@ -75,14 +98,14 @@ def render_page_diagnosis(ticker, window_days, lambda_val, sigma_val, P_anchor_g
     current_t_stat = robust_stats.get('structural_t_stat', 0.0)
     current_conf = robust_stats.get('structural_confidence', 0.0)
 
-    # --- Calculate Target Price and Entry Price ---
+    # --- 计算目标价和加仓点 ---
     current_P_anchor = P_anchor_global
     if current_pe > 0 and current_P_anchor > 0:
         target_price_from_pe = current_P_anchor * (current_mean / current_pe)
     else:
         target_price_from_pe = None
 
-    annual_sigma_for_ref = sigma_val # Use the global sigma from sidebar
+    annual_sigma_for_ref = sigma_val # 使用侧边栏的全局波动率
     daily_sigma_for_ref = annual_sigma_for_ref / np.sqrt(252)
 
     if current_P_anchor > 0 and daily_sigma_for_ref > 0:
@@ -90,7 +113,7 @@ def render_page_diagnosis(ticker, window_days, lambda_val, sigma_val, P_anchor_g
     else:
         price_drop_1sd = None
 
-    # 3. 基于“历史结构性置信度”判定强度 (文案相应调整)
+    # 3. 基于“历史结构性置信度”判定强度
     if current_conf >= 95.0:
         conf_label = "⭐⭐⭐ 极高 (Robust)"
         conf_color = "green"
@@ -105,7 +128,7 @@ def render_page_diagnosis(ticker, window_days, lambda_val, sigma_val, P_anchor_g
         conf_help = f"历史结构性置信度 {current_conf:.1f}% (<85%)。\n警惕：该资产历史上并没有表现出稳定的均值回归特征（可能是趋势型或随机游走），当前策略可能不适用。"
 
     # =========================================================
-    # Part 1: 参数验证与历史回溯 (The Gatekeeper)
+    # Part 1: 参数验证与历史回溯
     # =========================================================
     st.subheader("1. 核心参数验证 (Diagnosis)")
 
@@ -129,24 +152,25 @@ def render_page_diagnosis(ticker, window_days, lambda_val, sigma_val, P_anchor_g
     with col_d4:
         st.markdown("**估值中枢目标价**")
         if target_price_from_pe is not None and current_P_anchor > 1.0:
-             st.code(f"P_target: {target_price_from_pe:.2f}")
-             st.caption(f"参考加仓点 (1σ): {price_drop_1sd:.2f}",
+            st.code(f"P_target: {target_price_from_pe:.2f}")
+            st.caption(f"参考加仓点 (1σ): {price_drop_1sd:.2f}",
                         help=f"这是基于锚定股价 P (${current_P_anchor:.2f}) 预期日波动 (-1σ) 推算的参考加仓点。请在侧边栏更新锚定价格。")
         else:
-             st.code("P_target: N/A")
-             st.caption("⚠️ 请在侧边栏 **Step 0 参数** 中设置 **当前股价 P (Anchor)** 以计算目标价。")
+            st.code("P_target: N/A")
+            st.caption("⚠️ 请在侧边栏 **Step 0 参数** 中设置 **当前股价 P (Anchor)** 以计算目标价。")
 
     # --- 历史图表 (Visual Verification) ---
     # Plot 1: PE Context
     fig1, ax0 = plt.subplots(figsize=(10, 3))
-    ax0.plot(rolling_df.index, rolling_df['value'], 'k', alpha=0.8, label='PE')
+    # 原始全量数据（df）与滚动均线（rolling_df）
+    ax0.plot(df.index, df['value'], 'k', alpha=0.8, label='PE')
     ax0.plot(rolling_df.index, rolling_df['rolling_mean'], 'b--', label=f'{window_days}日均线')
     ax0.set_title(f'{ticker} 估值偏离度 (验证: 低估是否真实？)', fontsize=10)
     ax0.legend(loc='upper left'); ax0.grid(True, alpha=0.3)
     st.pyplot(fig1)
     plt.close(fig1)
 
-    # Plot 2: Lambda History (Critical Check)
+    # Plot 2: Lambda History (回归动力历史，重要性检查)
     lambda_80 = np.percentile(rolling_df['Lambda'], 80)
 
     fig2, ax1 = plt.subplots(figsize=(10, 3))
@@ -157,14 +181,14 @@ def render_page_diagnosis(ticker, window_days, lambda_val, sigma_val, P_anchor_g
     st.pyplot(fig2)
     plt.close(fig2)
 
-    # Plot 3: Sigma (Volatility Check)
+    # Plot 3: Sigma (波动率检查)
     st.markdown("**波动率验证 (Sigma Check)**")
     if st.session_state.get('sigma_rolling_data') and ticker in st.session_state.sigma_rolling_data:
         roll_vol = st.session_state.sigma_rolling_data[ticker]
 
         fig4, ax3 = plt.subplots(figsize=(10, 3))
-        if isinstance(roll_vol.index, pd.DatetimeIndex): idx_plot = roll_vol.index
-        else: idx_plot = roll_vol.index.values
+        # 索引已经是日期类型，无需额外检查和转换
+        idx_plot = roll_vol.index
 
         ax3.plot(idx_plot, roll_vol.values, color='gray', alpha=0.6, label='滚动波动率')
         ax3.axhline(sigma_val, color='green', linewidth=2, label=f'当前采用 Sigma ({sigma_val:.1%})')
@@ -179,12 +203,13 @@ def render_page_diagnosis(ticker, window_days, lambda_val, sigma_val, P_anchor_g
     st.markdown("---")
 
     # =========================================================
-    # Part 2: 未来推演 (The Crystal Ball)
+    # Part 2: 未来推演 (蒙特卡洛模拟)
     # =========================================================
     st.subheader("2. 盈亏分布推演 (Simulation)")
 
     lambda_display = f"{current_lambda:.2f}" if current_lambda is not None else 'N/A'
-    st.caption(f"👉 **前提假设**：如果估值回归真的遵循上述 Lambda={lambda_display} 的历史规律，那么正态分布下的结局是：")
+    # 逻辑前提提示
+    st.caption(f"👉 **前提假设**：假设 **估值中枢(均线)不发生下移**，且回归遵循 Lambda={lambda_display} 的规律，推演结局如下：")
 
     # 定义关键时间窗口
     check_points_map = {
@@ -199,12 +224,13 @@ def render_page_diagnosis(ticker, window_days, lambda_val, sigma_val, P_anchor_g
         st.warning("日内 Sigma (波动率) 数据缺失或为零，无法运行蒙特卡洛模拟。")
         return
 
+    # 运行蒙特卡洛模拟
     paths = run_simulation(current_pe, current_mean, current_lambda, current_sigma_daily, days_to_simulate=200)
 
     # 分析分布
     df_risk = analyze_risk_reward(paths, current_pe, check_points_map)
 
-    # 输出表格
+    # 输出表格 (风险收益分布)
     st.dataframe(
         df_risk.style.format({
             "亏损概率 (Loss%)": "{:.1%}",

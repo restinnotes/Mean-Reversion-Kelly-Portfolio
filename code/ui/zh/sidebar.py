@@ -3,6 +3,7 @@
 import streamlit as st
 import os
 import sys
+import json # <--- 新增导入
 
 # Import Data/Config modules - 修复后的导入，不再手动操作 sys.path
 from data.fetcher import get_ou_for_ticker, get_sigma
@@ -20,6 +21,60 @@ def render_sidebar():
     with st.sidebar:
         st.title("导航与全局参数")
 
+        # ==========================================
+        # [NEW] 配置管理 (导入/导出)
+        # ==========================================
+        with st.expander("💾 配置管理 (导入/导出)", expanded=False):
+            st.caption("保存当前 Step 2 的组合和所有参数设置。")
+
+            # 定义需要保存的 Session State 键名
+            config_keys = [
+                'ticker', 'lambda', 'sigma', 'r_f', 'k_factor', 'beta',
+                'P', 'V_target', 'V_hard', 'V_fill',
+                'iv_pricing', 'opt_price', 'delta', 'theta',
+                'window_days', 'days_to_expiry', 'k_fill', 'total_capital',
+                'P_anchor_global', 'portfolio_data', 'max_leverage_cap'
+            ]
+
+            # 1. 导出
+            # 过滤掉 None 值，确保 JSON 序列化安全
+            current_config = {}
+            for k in config_keys:
+                if k in st.session_state:
+                    val = st.session_state[k]
+                    try:
+                        # 尝试序列化，跳过不可序列化的对象（如自定义的DataFrame或复杂对象）
+                        json.dumps(val)
+                        current_config[k] = val
+                    except:
+                        pass # 跳过不可序列化的对象
+
+            json_str = json.dumps(current_config, indent=4, ensure_ascii=False)
+
+            st.download_button(
+                label="📤 导出配置 (JSON)",
+                data=json_str,
+                file_name="kelly_config.json",
+                mime="application/json"
+            )
+
+            # 2. 导入
+            uploaded_file = st.file_uploader("📥 导入配置", type=['json'])
+            if uploaded_file is not None:
+                try:
+                    data = json.load(uploaded_file)
+                    for k, v in data.items():
+                        st.session_state[k] = v
+
+                    st.success("配置已加载！")
+                    if st.button("🔄 刷新页面生效"):
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"导入失败: {e}")
+
+        st.divider()
+        # ==========================================
+
         page = st.radio("选择工具页面",
                         ("Step 0: 市场诊断",
                          "Step 0.5: 最优期限求解",
@@ -33,7 +88,7 @@ def render_sidebar():
         # --- 1. 输入框 ---
         ticker = st.text_input("股票代码 (Ticker)", value=st.session_state.ticker, key='ticker_global').upper()
         current_P_anchor_global = st.number_input("当前股价 P (Anchor)", value=st.session_state.P_anchor_global, key='P_anchor_global', format="%.2f",
-                                                  help="用于在 Step 0 计算 '估值中枢目标价' 和 '参考加仓点' 的股票价格锚点。请确保这是最新的价格。")
+                                                 help="用于在 Step 0 计算 '估值中枢目标价' 和 '参考加仓点' 的股票价格锚点。请确保这是最新的价格。")
 
         # --- 2. 自动获取数据逻辑 (Auto-Fetch) ---
         need_refresh = (ticker != st.session_state.get('last_fetched_ticker')) or \
@@ -173,7 +228,7 @@ def render_sidebar():
 
         elif page == "Step 2: 多标的组合管理":
             st.subheader("2.1 组合约束")
-            max_leverage_cap = st.slider("总仓位上限 (C_max)", 0.5, 2.0, st.session_state.get('c_max_slider', 1.0), 0.05, key='c_max_slider', help="控制总现金分配不超过 C_max * 100%")
+            max_leverage_cap = st.slider("总仓位上限 (C_max)", 0.5, 2.0, st.session_state.get('max_leverage_cap', 1.0), 0.05, key='c_max_slider', help="控制总现金分配不超过 C_max * 100%")
             st.info("数据来源于 Step 1 中点击 '保存到组合' 的记录。")
             st.session_state['max_leverage_cap'] = max_leverage_cap
 

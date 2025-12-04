@@ -1,3 +1,0 @@
-fonts-noto-cjk
-fonts-wqy-zenhei
-fontconfig

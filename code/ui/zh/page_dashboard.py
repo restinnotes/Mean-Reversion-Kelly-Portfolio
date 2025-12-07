@@ -8,107 +8,10 @@ import matplotlib.ticker as mtick
 try:
     from core.kelly import calculate_kelly_for_dashboard, calculate_dynamic_kelly_path, calculate_grid_signals
     from core.risk import calculate_stress_test
+    from core.normalization import normalize_portfolio  # 使用新的归一化函数
 except ImportError:
-    st.error("无法导入 core 模块，请确保 core 文件夹及 __init__.py 存在，且包含 kelly.py 和 risk.py。")
+    st.error("无法导入 core 模块，请确保 core 文件夹及 __init__.py 存在，且包含 kelly.py、risk.py 和 normalization.py。")
     st.stop()
-
-# ==========================================
-# 本地辅助函数：高级分组归一化逻辑 (包含 Group Confidence 权重)
-# ==========================================
-def normalize_portfolio_with_grouping(df_input, max_leverage_cap, group_conf_map=None):
-    """
-    Performs grouping-based capital allocation:
-    1. Inter-group: Allocation based on 'Group Confidence' weights.
-    2. Intra-group: Allocation based on (Raw Kelly * User Confidence) weights.
-    """
-    if isinstance(df_input, list):
-        df = pd.DataFrame(df_input)
-    elif isinstance(df_input, pd.DataFrame):
-        df = df_input.copy()
-    else:
-        return pd.DataFrame(), 0.0, 1.0, pd.DataFrame()
-
-    if df.empty:
-        return pd.DataFrame(), 0.0, 1.0, pd.DataFrame()
-
-    # 1. Calculate Weighted Score
-    if 'User_Confidence' not in df.columns:
-        df['User_Confidence'] = 1.0
-
-    df['Raw_Kelly_Pct'] = df['Raw_Kelly_Pct'].astype(float)
-    df['Weighted_Kelly_Score'] = df['Raw_Kelly_Pct'] * df['User_Confidence']
-
-    # 2. Identify Groups
-    if 'Group' not in df.columns:
-        df['Group'] = 'Default'
-    df['Group'] = df['Group'].fillna('Default').replace('', 'Default')
-
-    unique_groups = df['Group'].unique()
-
-    # --- NEW LOGIC: Group Weight Calculation ---
-    # Use provided map or default to 1.0 for all
-    if group_conf_map is None:
-        group_conf_map = {g: 1.0 for g in unique_groups}
-
-    # Ensure all groups exist in the map
-    for g in unique_groups:
-        if g not in group_conf_map:
-            group_conf_map[g] = 1.0
-
-    # Calculate Total Group Weight (The denominator)
-    total_group_weight = sum(group_conf_map[g] for g in unique_groups)
-    if total_group_weight == 0:
-        total_group_weight = 1.0
-    # -------------------------------------------
-
-    # 3. Calculate Intra-group Totals
-    group_totals = df.groupby('Group')['Weighted_Kelly_Score'].sum().reset_index(name='Group_Weighted_Total')
-    group_ask_mean = df.groupby('Group')['Raw_Kelly_Pct'].mean().reset_index(name='Group_Ask_Mean')
-
-    # Merge group info back to main df
-    df = pd.merge(df, group_totals, on='Group', how='left')
-
-    # 4. Core Allocation Logic
-    def calculate_final_pct(row):
-        group_name = row['Group']
-        group_total_score = row['Group_Weighted_Total']
-        asset_score = row['Weighted_Kelly_Score']
-
-        if group_total_score == 0:
-            return 0.0
-
-        # --- CHANGED: Apply Group Confidence Weight ---
-        # Group Allocation = Total Cap * (Group Conf / Sum of All Group Confs)
-        group_conf = group_conf_map.get(group_name, 1.0)
-        group_target_cap = max_leverage_cap * (group_conf / total_group_weight)
-        # ----------------------------------------------
-
-        # Internal Ratio = Asset Score / Group Total Score
-        internal_ratio = asset_score / group_total_score
-
-        # Final = Group Cap * Internal Ratio
-        return group_target_cap * internal_ratio
-
-    df['Final_Pct'] = df.apply(calculate_final_pct, axis=1)
-
-    # 5. Stats & Return
-    total_raw_old = df['Raw_Kelly_Pct'].sum()
-    total_final_alloc = df['Final_Pct'].sum()
-
-    total_weighted_ask = df['Weighted_Kelly_Score'].sum()
-    scale_factor = total_final_alloc / total_weighted_ask if total_weighted_ask > 0 else 1.0
-
-    group_stats = group_totals.merge(group_ask_mean, on='Group')
-    group_stats['Asset_Count'] = df.groupby('Group').size().values
-
-    # Add Group Confidence to stats for display
-    group_stats['Group_Confidence'] = group_stats['Group'].map(group_conf_map)
-
-    group_allocated = df.groupby('Group')['Final_Pct'].sum().reset_index(name='Group_Allocated')
-    group_stats = group_stats.merge(group_allocated, on='Group')
-    group_stats.rename(columns={'Group_Ask_Mean': 'Group_Ask'}, inplace=True)
-
-    return df, total_raw_old, scale_factor, group_stats
 
 # ==========================================
 # 页面渲染函数
@@ -143,8 +46,6 @@ def render_page_dashboard(ticker, lambda_val, sigma_val, r_f, k_factor, beta, P,
     L = kelly_results['L']
     alpha = kelly_results['alpha']
     sigma_leaps = kelly_results['sigma_leaps']
-    # k_factor_used = kelly_results['k_factor_used']
-    # kelly_ratio_raw = kelly_results['kelly_ratio_raw']
 
     # --- Display Results ---
     col_d, col_m = st.columns([1, 2])
@@ -242,7 +143,6 @@ def render_page_dashboard(ticker, lambda_val, sigma_val, r_f, k_factor, beta, P,
         plt.close(fig)
 
         # --- Grid Trading Advice ---
-        # 注意：使用 contracts_series 的最大值来判断
         max_contracts_sim = np.max(contracts_series) if len(contracts_series) > 0 else 0
         buy_points, sell_points, step_size = calculate_grid_signals(sim_prices, contracts_series, target_contracts, P)
 
@@ -258,7 +158,7 @@ def render_page_dashboard(ticker, lambda_val, sigma_val, r_f, k_factor, beta, P,
                     st.write(f"- 跌至 **${point['price']:.2f}** : 加至 **{int(point['target_hold'])}** 张 (+{point['step']}张)")
 
         with col_sell:
-            st.markdown("##### ##### 📈 上涨减仓参考")
+            st.markdown("##### 📈 上涨减仓参考")
             if not sell_points:
                 st.write("无近期减仓点 (或已空仓)")
             else:
@@ -305,13 +205,14 @@ def render_page_dashboard(ticker, lambda_val, sigma_val, r_f, k_factor, beta, P,
                 if st.button("➕ 保存当前配置到组合", type="primary"):
                     asset_record = {
                         'Ticker': ticker,
-                        'Group': group_name, # 保存 Group 字段
+                        'Group': group_name,
                         'Raw_Kelly_Pct': f_cash,
-                        'User_Confidence': alpha, # Use Alpha as initial confidence
+                        'User_Confidence': alpha,
+                        'Group_Confidence': 1.0,  # 默认组信心权重
                         'ERP': ERP,
                         'L': L,
                         'k_factor': k_factor,
-                        'Alpha': alpha, # 保存 Alpha 作为参考
+                        'Alpha': alpha,
                         'P': P,
                         'V_target': V_target,
                         'V_hard': V_hard,
@@ -343,10 +244,13 @@ def render_page_multi_asset_normalization(max_leverage_cap):
     with st.expander("❓ 组合相关性与仓位上限 (C_max) 设定指南"):
         st.markdown(r"""
             组合中资产的相关性（Correlation）是确定最终总仓位上限 $C_{max}$ 的关键因素。
+
+            **新归一化公式：**
+
+            $$\text{Final\_Pct} = \frac{\text{Raw\_Kelly} \times \text{Group\_Confidence} \times \text{User\_Confidence}}{\text{Sum\_User\_Confidence\_in\_Group} \times \text{Sum\_All\_Group\_Confidence} \times \text{Scale\_Factor}}$$
+
             * **低相关性 ($\rho \approx 0$):** 允许较高的 $C_{max}$ (例如 $100\%$ 或更高)。
             * **高相关性 ($\rho \approx 1$):** 必须将 $C_{max}$ 设定在较低水平 (例如 $25\% \sim 50\%$)，以避免黑天鹅事件导致账户清零。
-
-            *本计算器采用**分层归一化方法**：组间按权重分配资金，组内按加权 Kelly 比例分配。*
         """)
     st.markdown("---")
 
@@ -357,48 +261,43 @@ def render_page_multi_asset_normalization(max_leverage_cap):
     # Prepare Data
     df = pd.DataFrame(st.session_state['portfolio_data'])
 
-    # Initialize 'User_Confidence' if missing (using Alpha as initial default)
+    # Initialize required columns
     if 'User_Confidence' not in df.columns:
         df['User_Confidence'] = df.get('Alpha', 1.0)
-    df['User_Confidence'] = df['User_Confidence'].apply(lambda x: round(x, 2))
-
-    # Initialize Group Info
+    if 'Group_Confidence' not in df.columns:
+        df['Group_Confidence'] = 1.0
     if 'Group' not in df.columns:
         df['Group'] = 'Default'
+
+    df['User_Confidence'] = df['User_Confidence'].apply(lambda x: round(x, 2))
     df['Group'] = df['Group'].fillna('Default').replace('', 'Default')
     df = df.sort_values(by='Group')
 
-
     # ==========================================
-    # 1. Group Configuration (New UI Block)
+    # 1. Group Configuration
     # ==========================================
     st.subheader("1. 分组权重配置 (组间分配)")
-    st.caption("设置每个分组的信心权重。资金将根据 `该组权重 / 总权重` 的比例在各组间分配。")
+    st.caption("设置每个分组的信心权重。资金将根据公式中的 Group_Confidence 进行分配。")
 
     unique_groups = df['Group'].unique()
 
-    # Construct a dataframe for Group Settings
-    # Use session_state to persist group confidence if available, otherwise default to 1.0
     if 'group_conf_state' not in st.session_state:
         st.session_state['group_conf_state'] = {g: 1.0 for g in unique_groups}
 
-    # Ensure all current groups are in the state, initialized to 1.0 if new
     for g in unique_groups:
         if g not in st.session_state['group_conf_state']:
             st.session_state['group_conf_state'][g] = 1.0
 
-    # Create DF from current state for editing
     group_conf_data = [{"Group": g, "Group_Confidence": st.session_state['group_conf_state'][g]} for g in unique_groups]
     df_groups_input = pd.DataFrame(group_conf_data)
 
-    # Editor for Groups
     edited_groups = st.data_editor(
         df_groups_input,
         column_config={
             "Group": st.column_config.TextColumn("分组名称", disabled=True),
             "Group_Confidence": st.column_config.NumberColumn(
                 "组信心权重",
-                help="权重越高，分得的总资金比例越大。 (例如 1.0 = 标准， 2.0 = 双倍)",
+                help="权重越高，该组在公式分子中的权重越大",
                 min_value=0.0, max_value=10.0, step=0.1, format="%.1f"
             )
         },
@@ -407,30 +306,33 @@ def render_page_multi_asset_normalization(max_leverage_cap):
         key="group_conf_editor_widget"
     )
 
-    # Convert to Dictionary and update session state
     group_conf_map = dict(zip(edited_groups['Group'], edited_groups['Group_Confidence']))
     st.session_state['group_conf_state'] = group_conf_map
+
+    # Update df with Group_Confidence
+    df['Group_Confidence'] = df['Group'].map(group_conf_map)
 
     # ==========================================
     # 2. Asset Configuration
     # ==========================================
     st.subheader("2. 资产配置 (组内分配)")
-    st.caption("调整单个资产的信心。组内资金将按 `原始建议 * 信心` 的比例分配。")
+    st.caption("调整单个资产的信心权重 (User_Confidence)，影响公式分子。")
 
     column_config = {
         "Ticker": st.column_config.TextColumn("代码", disabled=True),
         "Group": st.column_config.TextColumn("分组", disabled=True),
-        "Raw_Kelly_Pct": st.column_config.NumberColumn("原始建议 %", format="%.2f", disabled=True),
+        "Raw_Kelly_Pct": st.column_config.NumberColumn("原始建议 %", format="%.2f%%", disabled=True),
         "User_Confidence": st.column_config.NumberColumn(
             "资产信心权重",
             min_value=0.0, max_value=5.0, step=0.05, format="%.2f"
         ),
+        "Group_Confidence": st.column_config.NumberColumn("组权重", format="%.1f", disabled=True),
         "Alpha": st.column_config.NumberColumn("参考 Alpha", format="%.3f", disabled=True),
         "ERP": st.column_config.NumberColumn("ERP", format="%.1f%%", disabled=True),
         "L": st.column_config.NumberColumn("杠杆", format="%.2fx", disabled=True),
     }
 
-    display_columns = ['Group', 'Ticker', 'Raw_Kelly_Pct', 'User_Confidence', 'Alpha', 'ERP', 'L']
+    display_columns = ['Group', 'Ticker', 'Raw_Kelly_Pct', 'User_Confidence', 'Group_Confidence', 'Alpha', 'ERP', 'L']
 
     edited_df = st.data_editor(
         df[display_columns],
@@ -441,15 +343,13 @@ def render_page_multi_asset_normalization(max_leverage_cap):
         key='portfolio_editor'
     )
 
-    # Update main DF with edited asset confidence and sync back
     df['User_Confidence'] = edited_df['User_Confidence']
     st.session_state['portfolio_data'] = df.to_dict('records')
 
     # ==========================================
-    # 3. Calculation & Display
+    # 3. Calculation & Display using new normalize_portfolio
     # ==========================================
-    # Pass group_conf_map to the logic function
-    df_result, total_raw, scale_factor, group_stats = normalize_portfolio_with_grouping(df, max_leverage_cap, group_conf_map)
+    df_result, total_raw, scale_factor = normalize_portfolio(df, max_leverage_cap)
 
     if df_result.empty:
         st.warning("计算结果为空。")
@@ -458,34 +358,33 @@ def render_page_multi_asset_normalization(max_leverage_cap):
     total_final_alloc = df_result['Final_Pct'].sum()
     st.markdown("---")
 
-    # Results Display (Validation)
+    # Results Display
     st.subheader("3. 结果验证")
 
-    with st.expander("📊 分组统计验证 (含权重检查)", expanded=True):
-        st.caption("验证逻辑：注意观察 **'组权重'** 和 **'组获配资金'** 之间的比例关系。")
-        group_display = group_stats.copy()
+    with st.expander("📊 分组统计验证", expanded=True):
+        group_stats = df_result.groupby('Group').agg({
+            'Ticker': 'count',
+            'Group_Confidence': 'first',
+            'Final_Pct': 'sum',
+            'Unscaled_Score': 'sum'
+        }).reset_index()
 
-        # Visualization Formatting
-        group_display['Group_Allocated'] = group_display['Group_Allocated'].apply(lambda x: f"**{x:.2%}**")
-        group_display['Group_Confidence'] = group_display['Group_Confidence'].apply(lambda x: f"{x:.1f}")
+        group_stats.columns = ['分组', '资产数', '组权重', '组获配资金', '组未缩放分数']
 
         st.dataframe(
-            group_display[['Group', 'Asset_Count', 'Group_Confidence', 'Group_Allocated']],
-            column_config={
-                "Group": "分组名称",
-                "Asset_Count": "资产数",
-                "Group_Confidence": "组权重",
-                "Group_Allocated": "组获配资金 (结果)"
-            },
+            group_stats.style.format({
+                '组权重': '{:.1f}',
+                '组获配资金': '{:.2%}',
+                '组未缩放分数': '{:.4f}'
+            }),
             hide_index=True,
             use_container_width=True
         )
 
         if total_raw > max_leverage_cap:
-             st.info(f"💡 原始总需求 ({total_raw:.2%}) 超过上限 ({max_leverage_cap:.2%})，系统已按分组权重进行缩放。")
+            st.info(f"💡 原始总需求 ({total_raw:.2%}) 超过上限 ({max_leverage_cap:.2%})，系统已按公式进行缩放 (Scale Factor: {scale_factor:.4f})。")
         elif total_final_alloc < max_leverage_cap * 0.9999:
-             st.info("🎯 组合占用低于上限，可继续增加低相关性资产或提高信心权重。")
-
+            st.info("🎯 组合占用低于上限，可继续增加低相关性资产或提高信心权重。")
 
     col_res1, col_res2 = st.columns([1, 1])
     with col_res1:
@@ -494,7 +393,7 @@ def render_page_multi_asset_normalization(max_leverage_cap):
         df_final_display.rename(columns={'Final_Pct': '最终仓位 %', 'Ticker': '代码', 'Group': '分组'}, inplace=True)
         st.dataframe(
             df_final_display.style.format({'最终仓位 %': '{:.2%}'})
-                             .applymap(lambda x: 'background-color: #d4edda' if isinstance(x, float) and x > 0.05 else None, subset=['最终仓位 %']),
+                             .applymap(lambda x: 'background-color: #d4edda' if isinstance(x, float) and x > 0.05 else '', subset=['最终仓位 %']),
             use_container_width=True,
             hide_index=True
         )
@@ -502,12 +401,11 @@ def render_page_multi_asset_normalization(max_leverage_cap):
         st.metric("总资金占用", f"{total_final_alloc:.2%}", f"上限: {max_leverage_cap:.2%}")
 
         if total_final_alloc > max_leverage_cap * 1.0001:
-             st.error("⚠️ 依然超限，请检查分组计算是否有误。")
+            st.error("⚠️ 超限，请检查计算。")
         elif total_final_alloc < max_leverage_cap * 0.9999:
-             st.success("✅ 组合占用在合理范围内。")
+            st.success("✅ 组合占用在合理范围内。")
         else:
-             st.success("✅ 组合占用达到目标上限。")
-
+            st.success("✅ 组合占用达到目标上限。")
 
     with col_res2:
         st.write("##### 资金饼图")
@@ -517,13 +415,11 @@ def render_page_multi_asset_normalization(max_leverage_cap):
             sizes = plot_df['Final_Pct'].tolist()
             remaining = max_leverage_cap - total_final_alloc
 
-            # Prepare colors and labels for plotting
             colors = plt.cm.Paired(np.arange(len(labels)))
 
             if remaining > 0.001:
                 labels.append(f'现金 / 剩余额度 ({remaining:.1%})')
                 sizes.append(remaining)
-                # Assign a distinct color to cash/remaining
                 new_colors = list(colors) + [(0.7, 0.7, 0.7, 1.0)]
                 colors = new_colors
 
@@ -545,5 +441,5 @@ def render_page_multi_asset_normalization(max_leverage_cap):
     if st.button("清空组合", type="secondary"):
         st.session_state['portfolio_data'] = []
         if 'group_conf_state' in st.session_state:
-             del st.session_state['group_conf_state']
+            del st.session_state['group_conf_state']
         st.rerun()

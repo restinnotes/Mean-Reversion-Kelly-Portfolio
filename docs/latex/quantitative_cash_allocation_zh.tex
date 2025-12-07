@@ -1,33 +1,114 @@
 \documentclass[12pt, a4paper]{ctexart}
 
-% --- 基础包配置 ---
-\usepackage{geometry}         % 页面边距
-\usepackage{amsmath, amssymb} % 数学公式
-\usepackage{graphicx}         % 图片插入
-\usepackage{xcolor}           % 颜色
-\usepackage{hyperref}         % 超链接
-\usepackage[skins]{tcolorbox} % 漂亮的文本框 (加载 skins 以支持 enhanced)
-\usepackage{parskip}          % 段落间距
-\usepackage{booktabs}         % 表格线
+% --- Basic Packages ---
+\usepackage{geometry}       % Page geometry
+\usepackage{amsmath, amssymb} % Math symbols
+\usepackage{graphicx}       % Images
+\usepackage{xcolor}         % Color support
+\usepackage[skins, breakable]{tcolorbox} % Advanced text boxes
+\usepackage{parskip}        % Paragraph spacing
+\usepackage{booktabs}       % Professional tables
+\usepackage{enumitem}       % Custom lists
+\usepackage{fancyhdr}       % Headers and footers
+\usepackage{lastpage}       % Reference to last page
 
-% --- 页面设置 ---
-\geometry{left=2.5cm, right=2.5cm, top=2.5cm, bottom=2.5cm}
-\linespread{1.3} % 行间距
+% --- Page Setup ---
+\geometry{left=2.5cm, right=2.5cm, top=3cm, bottom=3cm}
+\linespread{1.4} % Slightly increased line spread for better readability
 
-% --- 颜色定义 ---
-\definecolor{myblue}{RGB}{0,102,204}
-\definecolor{mygreen}{RGB}{0,153,76}
+% --- Color Definitions ---
+\definecolor{primaryBlue}{RGB}{0, 85, 164}   % A deep, professional blue
+\definecolor{accentGreen}{RGB}{0, 153, 76}   % Green for positive concepts
+\definecolor{bgGray}{RGB}{245, 247, 250}     % Very light gray background
+\definecolor{textGray}{RGB}{60, 60, 60}      % Dark gray for body text
 
-% --- tcolorbox 设置 ---
-\tcbset{enhanced, colback=myblue!5, colframe=myblue}
+% --- Hyperlinks Setup ---
+\usepackage{hyperref}
+\hypersetup{
+    colorlinks=true,
+    linkcolor=primaryBlue,
+    filecolor=magenta,
+    urlcolor=primaryBlue,
+    citecolor=primaryBlue,
+    pdftitle={The Holy Grail of Money Management},
+    pdfauthor={restinnotes} % Updated Author for PDF Metadata
+}
 
-\title{\textbf{从凯利公式到量化仓位管理：\\一个最大化收益率的资金管理系统}}
-\author{量化策略文档}
+% --- Typography & Section Styling ---
+% Customize section fonts and colors
+\ctexset{
+    section = {
+        format = \Large\bfseries\color{primaryBlue}\sffamily,
+        name = {},
+        number = \arabic{section}
+    },
+    subsection = {
+        format = \large\bfseries\color{primaryBlue!80!black}\sffamily
+    }
+}
 
+% --- Header & Footer ---
+\pagestyle{fancy}
+\fancyhf{} % Clear default
+\setlength{\headheight}{15pt}
+% LHead: Show Attribution
+\lhead{\sffamily\small\color{primaryBlue} \href{https://github.com/restinnotes}{\textbf{GitHub}: restinnotes}}
+% RHead: Show dynamic Section Title (\leftmark)
+\rhead{\sffamily\small\color{textGray} \leftmark}
+% LFoot: Show Attribution
+\lfoot{\sffamily\small\color{gray} \href{https://github.com/restinnotes}{\textbf{GitHub}: restinnotes}}
+% RFoot: Page Number
+\rfoot{\sffamily\small\color{gray} Page \thepage\ of \pageref{LastPage}}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\footrulewidth}{0.4pt}
+
+% --- Custom Box Environments ---
+
+% 1. Box for Key Formulas (Enhanced)
+\newtcolorbox{FormulaBox}[2][]{
+    enhanced,
+    colback=bgGray,
+    colframe=primaryBlue,
+    coltitle=white,
+    fonttitle=\bfseries\sffamily,
+    title={#2},
+    attach boxed title to top left={yshift=-2mm, xshift=2mm},
+    boxed title style={colback=primaryBlue, sharp corners},
+    drop fuzzy shadow,
+    #1
+}
+
+% 2. Box for Concepts/Notes
+\newtcolorbox{ConceptBox}[1][]{
+    enhanced,
+    colback=white,
+    colframe=accentGreen,
+    leftrule=4mm,
+    rightrule=0mm,
+    toprule=0mm,
+    bottomrule=0mm,
+    arc=0mm,
+    boxsep=1mm,
+    coltext=textGray,
+    #1
+}
+
+% --- List Customization ---
+\setlist[itemize]{label=\textcolor{primaryBlue}{$\blacksquare$}, itemsep=2pt}
+\setlist[enumerate]{label=\textcolor{primaryBlue}{\textbf{\arabic*.}}, itemsep=2pt}
+
+% --- Document Info ---
+\title{\Huge\bfseries\sffamily\color{primaryBlue} 寻找资金管理的圣杯：\\[0.5em] \Large 基于凯利公式的量化仓位管理系统}
+\author{\large\sffamily \href{https://github.com/restinnotes}{\textbf{GitHub}: restinnotes}}
+\date{} % Empty date
+
+% --- Main Content ---
 \begin{document}
 
-\date{}
 \maketitle
+\thispagestyle{empty} % No header/footer on title page
+\newpage
+\setcounter{page}{1}
 
 \section{引言：寻找资金管理的圣杯}
 
@@ -43,9 +124,12 @@ LEAPS 是实现杠杆与风险控制的一种工具，但核心理念在于科�
 一切的起点，是赌场里的抛硬币游戏。
 假设你有一个胜率 $p$ 的游戏，赢了赚 $b$ 倍，输了亏光。为了让长期财富增长速度最大化（而不是单次赢最多），数学家 J.L. Kelly 推导出了著名的公式：
 
+\begin{ConceptBox}
+\textbf{基础公式：}
 \[
 f^* = \frac{bp - q}{b}
 \]
+\end{ConceptBox}
 
 其中：
 \begin{itemize}
@@ -63,16 +147,17 @@ f^* = \frac{bp - q}{b}
 为了适应股市的连续波动，诺贝尔奖得主 Robert Merton 将凯利公式引入随机微积分领域。
 对于一个遵循几何布朗运动的资产，最佳仓位取决于\textbf{收益率}和\textbf{波动率}的对抗。
 
-核心公式（莫顿比例）：
+\begin{FormulaBox}{核心公式：莫顿比例}
 \[
 f^* = \frac{\mu - r}{\sigma^2}
 \]
+\end{FormulaBox}
 
 这个公式揭示了两个深刻的真理：
 \begin{enumerate}
     \item \textbf{分子（动力）：} $\mu - r$ 是超额收益（预期收益减去无风险利率）。收益越高，仓位越大。
     \item \textbf{分母（刹车）：} $\sigma^2$ 是方差。注意，这里是平方！
-          这意味着波动率对仓位的惩罚是指数级的。如果波动率翻倍，为了活命，你的仓位必须砍掉 75\%。
+    这意味着波动率对仓位的惩罚是指数级的。如果波动率翻倍，为了活命，你的仓位必须砍掉 75\%。
 \end{enumerate}
 
 \section{第三阶段：策略适配与杠杆实现}
@@ -114,16 +199,40 @@ f^* = \frac{\mu - r}{\sigma^2}
     \item \textbf{Theta 优化}：虽然引入了时间损耗，但由于策略专门捕捉被低估标的的高 $\mu$ 值，且深度实值期权的损耗率较低，策略的高 ERP 足以覆盖 Theta 成本。
 \end{itemize}
 
+\subsection{期限选择的数学博弈：寻找完美“接盘”合约}
+\textit{(The Solver: Finding the Perfect Filling Contract)}
+
+在 LEAPS 交易中，期限 $T$ 的选择不再是凭感觉，而是为了满足一个战术目标：\textbf{确保在至暗时刻，能够打满子弹。}
+
+我们在 Step 0.5 中引入了“最优期限求解器”，其数学本质是求解以下方程的根 $T^*$：
+
+\[
+f_{Kelly}(P=V_{fill}, \ k=k_{fill}, \ T^*) \approx 100\%
+\]
+
+\textbf{求解逻辑：}
+系统遍历所有可用期限（$T$），寻找一张合约，使得当股价跌至用户设定的补仓价 $V_{fill}$ 时，在应用了激进的 $k_{fill}$（通常为 1.0）后，模型建议的仓位恰好填满账户本金（100\% Allocation）。
+
+\textbf{为什么排除 3 个月内的合约？}
+求解器默认从 $T=90$ 天开始扫描。这是因为短期期权（<90天）存在两个致命缺陷：
+\begin{itemize}
+    \item \textbf{IV 偏高与不稳定}：短端隐含波动率往往受近期事件（如财报）扭曲，呈现“波动率微笑”极端形态，导致定价虚高，ERP 被压缩。
+    \item \textbf{Gamma 风险过大}：短期期权对股价变动极其敏感，违背了 LEAPS 策略“用时间换空间”的初衷。
+\end{itemize}
+
+\textbf{结果含义：}
+求解出的期限 $T^*$ 是一个“进可攻退可守”的锚点：它保证了如果市场真的发生暴跌，你手中的期权特性允许你安全地、从容地在底部完成满仓操作，而不会因为杠杆过高在半山腰就爆仓。
+
 \section{第四阶段：终极形态 —— 单标的现金公式}
 \textit{(The Final Form: Single Asset Cash Allocation)}
 
 整合上述所有参数，我们将 LEAPS 视为一个“高波动、高收益、带成本”的合成资产，代入凯利公式得到现金投入比例：
 
-\begin{tcolorbox}[title={单标的现金投入公式 (修正版)}]
+\begin{FormulaBox}{单标的现金投入公式 (修正版)}
 \[
 \text{cash}_i = \text{Capital} \cdot \frac{k \cdot \max(0, \alpha_i \cdot \text{ERP}_i)}{\sigma_{\text{stock}, i}^2 \cdot L_i^2}
 \]
-\end{tcolorbox}
+\end{FormulaBox}
 
 \textbf{公式核心逻辑解读：}
 \begin{itemize}
@@ -134,9 +243,27 @@ f^* = \frac{\mu - r}{\sigma^2}
     \item \textbf{分母（防守）：} $\sigma_{\text{stock}, i}^2 \cdot L_i^2$
     \begin{itemize}
         \item 这是 LEAPS 的方差 ($\text{Variance}_{\text{leaps}}$)。
-        \item \textbf{关键修正}：风险是随着杠杆 ($L_i$) 的\textbf{平方级}放大的。必须除以 $L^2$ 才能防止在高杠杆下爆仓，这是凯利公式应用于衍生品的数学铁律。
+        \item \textbf{稳健性修正（Robust Estimation）：} 这里的 $\sigma_{\text{stock}}$ 不再使用简单的历史标准差。我们采用 \textbf{滚动窗口（Rolling Window）} 方法，计算过去 5 年中每个 252 天窗口的波动率，并取其 \textbf{85 分位数（85th Percentile）}。
+        \item \textbf{安全锁（Safety Lock）：} 若当前瞬时波动率高于历史 85 分位值，模型将强制使用当前值。这确保了在平静期模型不会过于激进，而在动荡期能迅速收缩战线。
+        \item \textbf{杠杆惩罚}：风险随着杠杆 ($L_i$) 的\textbf{平方级}放大。必须除以 $L^2$ 才能防止爆仓。
     \end{itemize}
-    \item \textbf{调节器：} $k$ 为凯利部分因子（如 0.5 或 1.0），用于控制整体激进程度。
+    \item \textbf{动态信心调节器 (Dynamic $k$)：}
+本系统摒弃了传统的固定 $k$ 值，引入了随股价深度 ($Depth$) 线性增强的动态 $k$ 值机制。
+
+\[
+k(P) =
+\begin{cases}
+k_{start} & \text{if } P \ge P_{current} \\
+k_{start} + (k_{fill} - k_{start}) \cdot \frac{P_{current} - P}{P_{current} - V_{fill}} & \text{if } V_{fill} < P < P_{current} \\
+k_{fill} & \text{if } P \le V_{fill}
+\end{cases}
+\]
+
+\textbf{逻辑含义}：
+\begin{itemize}
+    \item \textbf{建仓期 ($P_{current}$)}：使用保守的 $k_{start}$ (如 0.5)。此时安全边际尚未最大化，主要目标是建立底仓并控制回撤。
+    \item \textbf{击球区 ($V_{fill}$)}：当股价跌至预设的补仓价时，均值回归的势能积蓄至顶点，此时 $k$ 线性增加至 $k_{fill}$ (如 1.0)，指示投资者在胜率最高的时刻敢于重仓出击。
+\end{itemize}
 \end{itemize}
 
 \section{第六阶段：多标的仓位处理 —— 归一化 vs 矩阵凯利}
@@ -183,11 +310,11 @@ C_{\text{raw}} = \sum_{i=1}^{N} \text{cash}_i
 \textbf{2. 矩阵凯利公式：}
 最优仓位向量 $\mathbf{F}^*$（每个元素代表该标的占总资金的比例）由下式给出：
 
-\begin{tcolorbox}[colback=white, colframe=myblue]
+\begin{FormulaBox}{矩阵凯利优化公式}
 \[
 \mathbf{F}^* = k \cdot \mathbf{\Sigma}^{-1} \cdot \mathbf{E}
 \]
-\end{tcolorbox}
+\end{FormulaBox}
 
 其中 $\mathbf{\Sigma}^{-1}$ 是协方差矩阵的逆矩阵。
 
